@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest a new animation, integration, or hardware improvement
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: What should the project make easier or more useful?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the state, protocol, animation, or hardware change.
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Uno memory and compatibility considerations
+      description: Mention flash, SRAM, display, wiring, or platform trade-offs where relevant.

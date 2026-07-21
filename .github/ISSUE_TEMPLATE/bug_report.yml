@@ -1,0 +1,57 @@
+name: Bug report
+description: Report a reproducible firmware, display, or bridge problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting a problem. Remove personal paths, usernames, port inventories, credentials, and private logs before submitting.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Arduino firmware
+        - TFT display or wiring
+        - macOS Python bridge
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      description: Board, display controller, resolution, and display tab colour. Do not include serial numbers.
+      placeholder: Arduino Uno R3, ST7735 128x160, red tab
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Upload...
+        2. Send command...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitised logs or compiler output
+      render: shell
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed personal paths, usernames, credentials, serial numbers, and unrelated private data.
+          required: true

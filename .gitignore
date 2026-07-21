@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Arduino build output
+build/
+*.hex
+*.elf
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Local serial logs and environment files
+*.log
+.env
+.env.*
