@@ -12,7 +12,6 @@ this script with --state whenever Codex changes phase.
 """
 
 import argparse
-import glob
 import sys
 import time
 from typing import Iterable, List
@@ -20,6 +19,7 @@ from typing import Iterable, List
 try:
     import serial
     from serial.tools import list_ports
+    from serial.tools.list_ports_common import ListPortInfo
 except ImportError as exc:
     raise SystemExit(
         "pyserial is required. Install it with: python3 -m pip install pyserial"
@@ -28,32 +28,60 @@ except ImportError as exc:
 VALID_STATES = ("idle", "running", "waiting", "review")
 
 
-def available_ports() -> List[str]:
-    """Return likely USB serial ports, preferring macOS /dev/cu.* devices."""
-    detected = [p.device for p in list_ports.comports()]
-    fallback = glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/cu.usbserial*")
-    return sorted(set(detected + fallback))
+def port_description(port: ListPortInfo) -> str:
+    """Return useful public hardware metadata without exposing local paths."""
+    details = [port.device]
+    if port.description and port.description != "n/a":
+        details.append(port.description)
+    if port.vid is not None and port.pid is not None:
+        details.append("VID:PID={:04X}:{:04X}".format(port.vid, port.pid))
+    return " — ".join(details)
+
+
+def detected_ports() -> List[ListPortInfo]:
+    """Return pyserial port records for outbound macOS /dev/cu.* devices."""
+    return sorted(
+        (p for p in list_ports.comports() if p.device.startswith("/dev/cu.")),
+        key=lambda p: p.device,
+    )
+
+
+def arduino_score(port: ListPortInfo) -> int:
+    """Rank ports conservatively; a generic USB-serial adapter is not an Uno."""
+    text = " ".join(
+        str(value or "")
+        for value in (port.description, port.manufacturer, port.product, port.interface)
+    ).lower()
+    score = 0
+    if "arduino" in text:
+        score += 100
+    if "uno" in text:
+        score += 50
+    if port.device.startswith("/dev/cu.usbmodem"):
+        score += 10
+    return score
 
 
 def choose_port(requested: str) -> str:
     if requested != "auto":
         return requested
 
-    candidates = [
-        p
-        for p in available_ports()
-        if p.startswith("/dev/cu.usbmodem") or p.startswith("/dev/cu.usbserial")
-    ]
-    if not candidates:
+    ports = detected_ports()
+    plausible = [p for p in ports if arduino_score(p) > 0]
+    if not plausible:
         raise SystemExit(
-            "No Arduino serial port found. Reconnect it, then run with --list."
+            "No identifiable Arduino serial port found. Reconnect the board, run "
+            "'arduino-cli board list', then choose the verified port with --port."
         )
-    if len(candidates) > 1:
-        joined = "\n  ".join(candidates)
+    best_score = max(arduino_score(p) for p in plausible)
+    candidates = [p for p in plausible if arduino_score(p) == best_score]
+    if len(candidates) != 1:
+        joined = "\n  ".join(port_description(p) for p in candidates)
         raise SystemExit(
-            "More than one likely board was found; choose one with --port:\n  " + joined
+            "More than one plausible Arduino was found; verify one with "
+            "'arduino-cli board list' and choose it with --port:\n  " + joined
         )
-    return candidates[0]
+    return candidates[0].device
 
 
 def normalise_state(raw: str) -> str:
@@ -100,8 +128,8 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.list:
-        ports = available_ports()
-        print("\n".join(ports) if ports else "No serial ports found.")
+        ports = detected_ports()
+        print("\n".join(port_description(p) for p in ports) if ports else "No serial ports found.")
         return 0
 
     selected_modes = sum(bool(x) for x in (args.state, args.interactive, args.stdin))

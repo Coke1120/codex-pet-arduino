@@ -21,7 +21,8 @@
 #define LOAD_GLCD
 #define LOAD_FONT2
 
-// Conservative clock for breadboard wires and 5V-to-3.3V level conversion.
+// Conservative clock for short breadboard/perfboard wires through a
+// push-pull-capable 5V-to-3.3V translator such as TXS0108E.
 #define SPI_FREQUENCY  8000000
 
 // If red and blue are swapped, uncomment this line:
