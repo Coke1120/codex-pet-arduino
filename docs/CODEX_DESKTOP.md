@@ -1,0 +1,122 @@
+# Direct Codex Desktop and CLI synchronization
+
+The basic `codex_pet_bridge.py` is intentionally manual: it sends only the state supplied through `--state`, `--interactive`, or `--stdin`. It does not inspect Codex Desktop automatically.
+
+For direct reflection, this repository uses the official Codex lifecycle hooks documented at <https://developers.openai.com/codex/hooks>:
+
+```text
+Codex Desktop / CLI lifecycle event
+              │ JSON on stdin
+              ▼
+mac/codex_pet_hook.py
+              │ privacy-safe per-session state file
+              ▼
+mac/codex_pet_daemon.py
+              │ persistent USB Serial
+              ▼
+Arduino Codex Pet
+```
+
+## State mapping
+
+| Codex event | Pet state |
+|---|---|
+| Session start | `idle` |
+| User prompt, ordinary tool use, subagent activity | `running` |
+| Review/test/lint/typecheck tool command or compaction | `review` |
+| Permission request | `waiting` |
+| Turn stop or session end | `idle` |
+
+When multiple Codex conversations are active, priority is `waiting` → `review` → `running` → `idle`. Session records expire after 15 minutes by default so a crashed Codex process cannot leave the pet permanently busy.
+
+The hook stores only a hashed session key, mapped state, event name, and timestamp under:
+
+```text
+~/Library/Application Support/CodexPet/sessions/
+```
+
+It does **not** store prompts, assistant messages, tool output, transcript paths, or working-directory paths.
+
+## 1. Install Python dependency
+
+```bash
+cd /path/to/codex-pet-arduino/mac
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+## 2. Test the daemon before changing Codex
+
+```bash
+.venv/bin/python codex_pet_daemon.py --dry-run --once
+```
+
+With no recent hook event, it prints:
+
+```text
+idle
+```
+
+Run the persistent bridge manually:
+
+```bash
+.venv/bin/python codex_pet_daemon.py --port auto
+```
+
+If more than one plausible board is attached, identify the Uno with `arduino-cli board list`, then pass its exact `/dev/cu.*` path using `--port`.
+
+## 3. Configure Codex hooks
+
+Codex loads user hooks from `~/.codex/hooks.json`. Start from [`examples/codex-hooks.json`](../examples/codex-hooks.json), replace every `/ABSOLUTE/PATH/TO/codex-pet-arduino` with the real repository path, and merge its event groups into any existing `~/.codex/hooks.json` rather than overwriting unrelated hooks.
+
+Restart Codex Desktop after changing hooks. Codex requires non-managed command hooks to be reviewed and trusted before they run. Open `/hooks` in Codex, inspect the exact commands, and trust them only if the paths point to this local repository.
+
+The hook always exits successfully and never makes allow/deny decisions, so a display or Serial failure cannot block a Codex turn.
+
+## 4. Start automatically with launchd
+
+macOS may deny background LaunchAgents access to source code kept under `Documents`. For a reliable service, install a small runtime copy under `~/Library/Application Support/CodexPet/runtime`, then copy [`examples/org.example.codex-pet.plist`](../examples/org.example.codex-pet.plist), replace its runtime paths, and install it as a per-user LaunchAgent:
+
+```bash
+RUNTIME="$HOME/Library/Application Support/CodexPet/runtime"
+mkdir -p "$RUNTIME"
+python3 -m venv "$RUNTIME"
+"$RUNTIME/bin/python" -m pip install -r mac/requirements.txt
+cp mac/codex_pet_daemon.py "$RUNTIME/codex_pet_daemon.py"
+
+cp examples/org.example.codex-pet.plist ~/Library/LaunchAgents/org.example.codex-pet.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.example.codex-pet.plist
+launchctl kickstart -k gui/$(id -u)/org.example.codex-pet
+```
+
+To remove it:
+
+```bash
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/org.example.codex-pet.plist
+rm ~/Library/LaunchAgents/org.example.codex-pet.plist
+```
+
+Logs are written to `/tmp/codex-pet.out.log` and `/tmp/codex-pet.err.log` by the example plist.
+
+## Verification
+
+With the daemon running and Arduino connected:
+
+1. Open or resume a Codex conversation: `idle`.
+2. Submit a prompt: `running`.
+3. Let Codex run tests, lint, review, or type checking: `review`.
+4. Trigger an approval request when the selected permission mode supports it: `waiting`.
+5. Let the turn finish: `idle`.
+
+Run the local regression tests after changes:
+
+```bash
+mac/.venv/bin/python tests/test_codex_desktop_sync.py
+python3 -m py_compile mac/*.py tests/*.py
+```
+
+## Current limitations
+
+- Codex exposes lifecycle events, not a stable public API for the decorative on-screen pet's exact animation frame. This integration reflects agent activity states rather than scraping UI pixels.
+- `PermissionRequest` appears only when Codex actually asks for approval. A configuration such as `approval_policy = "never"` will not emit that event.
+- Hook definitions are security-sensitive executable configuration. Review and trust are intentionally user-controlled in Codex; do not bypass that trust flow for normal desktop use.

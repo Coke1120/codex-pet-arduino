@@ -16,6 +16,7 @@ A tiny physical coding companion for an **Arduino Uno R3** and a **1.8-inch ST77
 - USB Serial control at **115200 baud**
 - Header, current-state indicator, and state-specific animation text
 - Manual, one-shot, interactive, and stdin-streaming bridge modes
+- Direct Codex Desktop/CLI lifecycle sync through official Codex hooks
 - Conservative Arduino-aware serial-port discovery that avoids generic USB adapters
 - Low-memory design without a full-screen framebuffer
 - Documented `TFT_eSPI` `User_Setup.h` for the supplied wiring
@@ -82,8 +83,11 @@ For the full bill of materials, staged power-up checklist, perfboard layout, and
 arduino/CodexPet/CodexPet.ino  Arduino firmware
 config/User_Setup.h            TFT_eSPI display and pin configuration
 mac/codex_pet_bridge.py        macOS USB Serial bridge
+mac/codex_pet_hook.py          Codex lifecycle hook event mapper
+mac/codex_pet_daemon.py        Persistent event aggregator and Serial bridge
 mac/requirements.txt           Python dependency
 docs/HARDWARE.md               Safe wiring, BOM, perfboard, and enclosure guide
+docs/CODEX_DESKTOP.md          Direct Codex Desktop/CLI synchronization guide
 ```
 
 ## Quick start
@@ -159,6 +163,10 @@ printf 'running\nwaiting\nreview\nidle\n' | \
 Opening an Uno serial port usually resets the board. The bridge therefore waits for startup and performs a small `ping` handshake before sending states.
 
 ## Connecting a coding workflow
+
+For direct Codex Desktop/CLI reflection, use the official lifecycle-hook integration in [`docs/CODEX_DESKTOP.md`](docs/CODEX_DESKTOP.md). The hook maps active turns, tool calls, approvals, review/test commands, and turn completion into the four display states; the persistent daemon keeps the Serial port open and aggregates concurrent Codex sessions.
+
+The manual `--stdin` method below remains useful for non-Codex tools or custom workflows.
 
 The most reliable integration is for the process that knows the real activity phase to write explicit newline-delimited states to a persistent `--stdin` bridge:
 
