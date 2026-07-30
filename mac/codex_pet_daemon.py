@@ -3,12 +3,13 @@
 
 import argparse
 import json
+import math
 import os
 import signal
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 try:
     import serial
@@ -21,6 +22,14 @@ except ImportError as exc:
 
 VALID_STATES = ("idle", "running", "waiting", "review")
 STATE_PRIORITY = {"idle": 0, "running": 1, "review": 2, "waiting": 3}
+PORT_WARNING_INTERVAL = 30.0
+
+
+def positive_float(raw: str) -> float:
+    value = float(raw)
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError("expected a positive finite number")
+    return value
 
 
 def default_state_dir() -> Path:
@@ -63,6 +72,27 @@ def choose_port(requested: str) -> Optional[str]:
     return winners[0] if len(winners) == 1 else None
 
 
+def _file_identity(path: Path) -> Optional[Tuple[int, int, int, int]]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
+def _prune_if_unchanged(
+    path: Path, identity: Optional[Tuple[int, int, int, int]]
+) -> None:
+    if identity is None or _file_identity(path) != identity:
+        return
+    try:
+        path.unlink()
+    except OSError:
+        # Another hook may have replaced it, or a transient filesystem error
+        # may make it readable again on the next poll.
+        pass
+
+
 def read_active_states(
     state_dir: Path, now: Optional[float] = None, active_ttl: float = 900.0
 ) -> List[Tuple[str, float]]:
@@ -71,16 +101,24 @@ def read_active_states(
     if not state_dir.exists():
         return active
     for path in state_dir.glob("*.json"):
+        identity = _file_identity(path)
+        if identity is None:
+            continue
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
             state = record["state"]
             updated_at = float(record["updated_at"])
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        except OSError:
             continue
-        if state not in VALID_STATES:
+        except (ValueError, TypeError, KeyError):
+            _prune_if_unchanged(path, identity)
+            continue
+        if state not in VALID_STATES or not math.isfinite(updated_at):
+            _prune_if_unchanged(path, identity)
             continue
         age = current - updated_at
         if age < -60 or age > active_ttl:
+            _prune_if_unchanged(path, identity)
             continue
         active.append((state, updated_at))
     return active
@@ -95,13 +133,30 @@ def aggregate_state(active: Iterable[Tuple[str, float]]) -> str:
     return max(entries, key=lambda item: (STATE_PRIORITY[item[0]], item[1]))[0]
 
 
+def should_send_state(
+    desired: str, sent: Optional[str], now: float, next_heartbeat_at: float
+) -> bool:
+    return desired != sent or now >= next_heartbeat_at
+
+
+def should_warn_port(now: float, next_warning_at: float) -> bool:
+    return now >= next_warning_at
+
+
 class ArduinoLink:
     def __init__(self, port: str, baud: int = 115200) -> None:
         self.port = port
         self.board = serial.Serial(port, baud, timeout=0.25, write_timeout=1.0)
-        time.sleep(2.1)
-        self.board.reset_input_buffer()
-        self._exchange("ping", "pong")
+        try:
+            time.sleep(2.1)
+            self.board.reset_input_buffer()
+            self._exchange("ping", "pong")
+        except (OSError, serial.SerialException):
+            try:
+                self.board.close()
+            except (OSError, serial.SerialException):
+                pass
+            raise
 
     def close(self) -> None:
         self.board.close()
@@ -116,7 +171,7 @@ class ArduinoLink:
             if not line:
                 continue
             received.append(line)
-            if line == expected or line.startswith(expected):
+            if line == expected:
                 return line
         raise OSError(
             "Arduino did not acknowledge {!r}; received {}".format(command, received)
@@ -128,6 +183,13 @@ class ArduinoLink:
         self._exchange(state, "OK " + state.upper())
 
 
+def _close_quietly(link: ArduinoLink) -> None:
+    try:
+        link.close()
+    except (OSError, serial.SerialException):
+        pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Continuously mirror Codex lifecycle hooks to Codex Pet."
@@ -135,8 +197,14 @@ def main() -> int:
     parser.add_argument("--port", default="auto", help="serial port or 'auto'")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--state-dir", type=Path, default=default_state_dir())
-    parser.add_argument("--poll", type=float, default=0.25)
-    parser.add_argument("--active-ttl", type=float, default=900.0)
+    parser.add_argument("--poll", type=positive_float, default=0.25)
+    parser.add_argument("--active-ttl", type=positive_float, default=900.0)
+    parser.add_argument(
+        "--heartbeat",
+        type=positive_float,
+        default=5.0,
+        help="seconds between state resynchronizations after board resets (default: 5)",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
@@ -151,10 +219,11 @@ def main() -> int:
     signal.signal(signal.SIGINT, request_stop)
 
     link: Optional[ArduinoLink] = None
-    connected_port: Optional[str] = None
     desired: Optional[str] = None
     sent: Optional[str] = None
     next_connect_at = 0.0
+    next_heartbeat_at = 0.0
+    next_port_warning_at = 0.0
 
     while not stopped:
         desired = aggregate_state(
@@ -175,26 +244,39 @@ def main() -> int:
             if selected:
                 try:
                     link = ArduinoLink(selected, args.baud)
-                    connected_port = selected
                     sent = None
+                    next_heartbeat_at = 0.0
                     print("Connected to {}".format(selected), flush=True)
                 except (OSError, serial.SerialException) as exc:
                     print("Codex Pet connection warning: {}".format(exc), file=sys.stderr)
                     link = None
                     next_connect_at = time.monotonic() + 2.0
             else:
-                next_connect_at = time.monotonic() + 2.0
+                now = time.monotonic()
+                if should_warn_port(now, next_port_warning_at):
+                    print(
+                        "No unique Arduino port found; reconnect or set --port "
+                        "after arduino-cli board list",
+                        file=sys.stderr,
+                    )
+                    next_port_warning_at = now + PORT_WARNING_INTERVAL
+                next_connect_at = now + 2.0
 
-        if link is not None and desired != sent:
+        now = time.monotonic()
+        if link is not None and should_send_state(
+            desired, sent, now, next_heartbeat_at
+        ):
+            changed = desired != sent
             try:
                 link.send_state(desired)
                 sent = desired
-                print("State: {}".format(desired), flush=True)
+                next_heartbeat_at = time.monotonic() + args.heartbeat
+                if changed:
+                    print("State: {}".format(desired), flush=True)
             except (OSError, serial.SerialException) as exc:
                 print("Codex Pet serial warning: {}".format(exc), file=sys.stderr)
-                link.close()
+                _close_quietly(link)
                 link = None
-                connected_port = None
                 next_connect_at = time.monotonic() + 2.0
 
         if args.once:
@@ -202,7 +284,7 @@ def main() -> int:
         time.sleep(args.poll)
 
     if link is not None:
-        link.close()
+        _close_quietly(link)
     return 0
 
 

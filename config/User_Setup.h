@@ -17,9 +17,9 @@
 #define TFT_DC    8
 #define TFT_RST   9
 
-// Keep only the small built-in fonts to preserve Uno flash/RAM.
+// Keep only the smallest built-in font to preserve Uno flash/RAM. The sketch
+// scales it for the header instead of linking a second font asset.
 #define LOAD_GLCD
-#define LOAD_FONT2
 
 // Conservative clock for short breadboard/perfboard wires through a
 // push-pull-capable 5V-to-3.3V translator such as TXS0108E.

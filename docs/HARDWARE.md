@@ -102,4 +102,6 @@ rear:   Arduino Uno with USB and reset access
 
 ## Verified boundary
 
-The current firmware has been compiled for `arduino:avr:uno`, uploaded to an identified Arduino Uno, and exercised over Serial for all four states plus `ping` and `status`. Display wiring, pixels, colours, offsets, backlight current, and enclosure fit still require physical verification after the level shifter arrives.
+The current reference firmware has been compiled for `arduino:avr:uno`, uploaded to an identified Arduino Uno R3, and exercised over Serial for all four states plus `ping`. The photographed ST7735S now displays the converted custom-pet frames with the expected orientation, colours, compact status bar, and continuous two-frame state loops. The current physical prototype uses the TXS0108E wiring above.
+
+A permanent perfboard/enclosure build still needs its own continuity check, current/voltage measurement, strain relief, and continuous-run verification. Different TFT breakout revisions or user-supplied pet atlases may require different tab, colour-order, electrical, or asset-conversion settings.

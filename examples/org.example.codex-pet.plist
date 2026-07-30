@@ -18,8 +18,8 @@
   <key>ProcessType</key>
   <string>Background</string>
   <key>StandardOutPath</key>
-  <string>/tmp/codex-pet.out.log</string>
+  <string>/Users/YOU/Library/Logs/CodexPet/daemon.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/codex-pet.err.log</string>
+  <string>/Users/YOU/Library/Logs/CodexPet/daemon.err.log</string>
 </dict>
 </plist>

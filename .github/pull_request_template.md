@@ -6,7 +6,8 @@
 
 <!-- Exact commands, hardware, and observed results. Remove personal paths and identifiers. -->
 
-- [ ] Python bridge passes `python3 -m py_compile mac/codex_pet_bridge.py`
+- [ ] Python tests pass with `python3 -m unittest discover -s tests -v`
+- [ ] Python syntax passes with `python3 -m py_compile mac/*.py tools/*.py tests/*.py`
 - [ ] Arduino sketch was verified for Arduino Uno, or the limitation is explained
 - [ ] Visual changes were checked on an ST7735 display, or the limitation is explained
 

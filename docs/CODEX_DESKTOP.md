@@ -64,6 +64,7 @@ Run the persistent bridge manually:
 ```
 
 If more than one plausible board is attached, identify the Uno with `arduino-cli board list`, then pass its exact `/dev/cu.*` path using `--port`.
+The daemon re-sends the selected state every five seconds by default so an Arduino reset cannot silently desynchronize the display. Use `--heartbeat SECONDS` to choose another positive interval.
 
 ## 3. Configure Codex hooks
 
@@ -84,7 +85,9 @@ python3 -m venv "$RUNTIME"
 "$RUNTIME/bin/python" -m pip install -r mac/requirements.txt
 cp mac/codex_pet_daemon.py "$RUNTIME/codex_pet_daemon.py"
 
+install -d -m 700 "$HOME/Library/Logs/CodexPet"
 cp examples/org.example.codex-pet.plist ~/Library/LaunchAgents/org.example.codex-pet.plist
+sed -i '' "s|/Users/YOU|$HOME|g" ~/Library/LaunchAgents/org.example.codex-pet.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.example.codex-pet.plist
 launchctl kickstart -k gui/$(id -u)/org.example.codex-pet
 ```
@@ -96,7 +99,7 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/org.example.codex-pet.plis
 rm ~/Library/LaunchAgents/org.example.codex-pet.plist
 ```
 
-Logs are written to `/tmp/codex-pet.out.log` and `/tmp/codex-pet.err.log` by the example plist.
+Logs are written to the user-owned `~/Library/Logs/CodexPet` directory by the example plist.
 
 ## Verification
 
@@ -111,8 +114,9 @@ With the daemon running and Arduino connected:
 Run the local regression tests after changes:
 
 ```bash
-mac/.venv/bin/python tests/test_codex_desktop_sync.py
-python3 -m py_compile mac/*.py tests/*.py
+mac/.venv/bin/python -m unittest discover -s tests -v
+PYTHONPYCACHEPREFIX=/tmp/codex-pet-pycache \
+  mac/.venv/bin/python -m py_compile mac/*.py tools/*.py tests/*.py
 ```
 
 ## Current limitations

@@ -17,6 +17,9 @@ build/
 .idea/
 *.swp
 
+# Local generated pet artwork (create with tools/convert_codex_pet.py)
+arduino/CodexPet/pet_generated.h
+
 # Local serial logs and environment files
 *.log
 .env

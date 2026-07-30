@@ -93,22 +93,34 @@ def normalise_state(raw: str) -> str:
     return state
 
 
-def read_replies(board: serial.Serial, duration: float = 0.25) -> None:
+def exchange(
+    board: serial.Serial, command: str, expected: str, duration: float = 0.75
+) -> str:
+    board.write((command + "\n").encode("ascii"))
+    board.flush()
     deadline = time.monotonic() + duration
+    received: List[str] = []
     while time.monotonic() < deadline:
         line = board.readline()
         if line:
-            print("Arduino:", line.decode("utf-8", errors="replace").rstrip())
+            reply = line.decode("utf-8", errors="replace").strip()
+            if not reply:
+                continue
+            received.append(reply)
+            print("Arduino:", reply)
+            if reply == expected:
+                return reply
         else:
             time.sleep(0.01)
+    raise OSError(
+        "Arduino did not acknowledge {!r}; received {}".format(command, received)
+    )
 
 
 def send_state(board: serial.Serial, raw: str) -> None:
     state = normalise_state(raw)
-    board.write((state + "\n").encode("ascii"))
-    board.flush()
+    exchange(board, state, "OK " + state.upper())
     print("Sent:", state)
-    read_replies(board)
 
 
 def stdin_states() -> Iterable[str]:
@@ -140,36 +152,43 @@ def main() -> int:
     print("Opening {} at {} baud...".format(port, args.baud))
 
     # Opening the port usually resets an Uno. Wait for its bootloader/setup.
-    with serial.Serial(port, args.baud, timeout=0.08, write_timeout=1.0) as board:
-        time.sleep(2.0)
-        board.reset_input_buffer()
-        board.write(b"ping\n")
-        board.flush()
-        read_replies(board, 0.5)
+    try:
+        board = serial.Serial(port, args.baud, timeout=0.08, write_timeout=1.0)
+    except (OSError, serial.SerialException) as exc:
+        print("Serial error:", exc, file=sys.stderr)
+        return 1
 
-        if args.state:
-            send_state(board, args.state)
-        elif args.stdin:
-            try:
+    with board:
+        try:
+            time.sleep(2.0)
+            board.reset_input_buffer()
+            exchange(board, "ping", "pong")
+
+            if args.state:
+                send_state(board, args.state)
+            elif args.stdin:
                 for raw in stdin_states():
                     send_state(board, raw)
-            except ValueError as exc:
-                print("Error:", exc, file=sys.stderr)
-                return 2
-        else:
-            print("Type idle/running/waiting/review; q exits.")
-            while True:
-                try:
-                    raw = input("state> ").strip()
-                except (EOFError, KeyboardInterrupt):
-                    print()
-                    break
-                if raw.lower() in ("q", "quit", "exit"):
-                    break
-                try:
-                    send_state(board, raw)
-                except ValueError as exc:
-                    print("Error:", exc)
+            else:
+                print("Type idle/running/waiting/review; q exits.")
+                while True:
+                    try:
+                        raw = input("state> ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        print()
+                        break
+                    if raw.lower() in ("q", "quit", "exit"):
+                        break
+                    try:
+                        send_state(board, raw)
+                    except ValueError as exc:
+                        print("Error:", exc)
+        except ValueError as exc:
+            print("Error:", exc, file=sys.stderr)
+            return 2
+        except (OSError, serial.SerialException) as exc:
+            print("Serial error:", exc, file=sys.stderr)
+            return 1
 
     return 0
 

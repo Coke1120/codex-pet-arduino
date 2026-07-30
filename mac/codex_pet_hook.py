@@ -9,6 +9,7 @@ stores prompts, tool output, transcript paths, or working directories.
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -16,19 +17,11 @@ from pathlib import Path
 from typing import Any, Dict
 
 VALID_STATES = ("idle", "running", "waiting", "review")
-REVIEW_WORDS = (
-    "review",
-    "test",
-    "pytest",
-    "unittest",
-    "vitest",
-    "jest",
-    "lint",
-    "ruff",
-    "mypy",
-    "typecheck",
-    "check",
-    "git diff",
+REVIEW_PATTERN = re.compile(
+    r"(?<![a-z0-9_])"
+    r"(?:review|tests?|pytest|unittest|vitest|jest|lint|ruff|mypy|"
+    r"typecheck|check|git\s+diff)"
+    r"(?![a-z0-9_])"
 )
 
 
@@ -53,7 +46,7 @@ def event_state(payload: Dict[str, Any]) -> str:
         tool_name = str(payload.get("tool_name") or "").lower()
         tool_input = payload.get("tool_input")
         searchable = tool_name + " " + json.dumps(tool_input, ensure_ascii=False).lower()
-        if any(word in searchable for word in REVIEW_WORDS):
+        if REVIEW_PATTERN.search(searchable):
             return "review"
         return "running"
     return "idle"

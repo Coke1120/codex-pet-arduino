@@ -7,18 +7,22 @@ Thank you for helping improve Codex Pet.
 - Reproducible fixes for ST7735 tab variants or colour ordering
 - Lightweight animations that fit Arduino Uno memory constraints
 - Serial bridge reliability and cross-platform improvements
+- Reproducible pet-atlas conversion, palette, compression, and frame-mapping improvements
 - Documentation, wiring clarity, and safety corrections
 
 ## Development workflow
 
 1. Fork the repository and create a focused branch.
 2. Keep unrelated changes out of the patch.
-3. Never commit usernames, absolute home-directory paths, serial-device inventories, credentials, or private logs.
+3. Never commit usernames, absolute home-directory paths, serial-device inventories, credentials, private logs, or pet artwork that you do not have permission to redistribute.
 4. For Arduino changes, verify the sketch for an Arduino Uno and report flash/RAM usage when available.
-5. For Python changes, run:
+5. Run the regression suite, Python syntax checks, and Uno compile:
 
    ```bash
-   python3 -m py_compile mac/codex_pet_bridge.py
+   python3 -m unittest discover -s tests -v
+   PYTHONPYCACHEPREFIX=/tmp/codex-pet-pycache \
+     python3 -m py_compile mac/*.py tools/*.py tests/*.py
+   arduino-cli compile --fqbn arduino:avr:uno arduino/CodexPet
    ```
 
 6. Explain the hardware tested, display tab setting, expected behaviour, and actual result in the pull request.

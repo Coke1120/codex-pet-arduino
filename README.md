@@ -4,22 +4,29 @@
 [![Arduino Uno](https://img.shields.io/badge/board-Arduino%20Uno-00979D?logo=arduino&logoColor=white)](https://docs.arduino.cc/hardware/uno-rev3/)
 [![Display](https://img.shields.io/badge/display-ST7735%20128%C3%97160-5C2D91)](https://github.com/Bodmer/TFT_eSPI)
 [![Python](https://img.shields.io/badge/bridge-Python%203-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![CI](https://github.com/Coke1120/codex-pet-arduino/actions/workflows/ci.yml/badge.svg)](https://github.com/Coke1120/codex-pet-arduino/actions/workflows/ci.yml)
 
-A tiny physical coding companion for an **Arduino Uno R3** and a **1.8-inch ST7735 128×160 TFT display**. A macOS Python serial bridge sends activity states over USB, and the display renders a bright pixel-art robot pet with animated `idle`, `running`, `waiting`, and `review` modes.
+A tiny physical coding companion for an **Arduino Uno R3** and a **1.8-inch ST7735 128×160 TFT display**. It mirrors Codex Desktop/CLI activity over USB Serial and renders the same selected custom Codex pet in compact animated `idle`, `running`, `waiting`, and `review` modes.
+
+The current reference build can use the locally selected **Sakamata Chloe** Codex pet through a gitignored generated header. Its source atlas is converted offline into eight large, 8-colour RLE-compressed frames so the animation fits the ATmega328P's 32 KB flash without a framebuffer. The public default remains an original MIT-licensed demo mascot.
 
 > Search keywords: Arduino desktop pet, Codex Pet, physical AI coding assistant, ST7735 animation, TFT_eSPI Arduino Uno, serial status display, pixel art robot pet, macOS Arduino bridge.
 
 ## Features
 
 - Four animated states: `idle`, `running`, `waiting`, and `review`
-- Colourful robot-cat drawn from lightweight graphics primitives
+- Large portrait pet view with a compact status strip
+- Real Codex custom-pet frames converted from the selected local atlas
+- 8-colour RLE assets and streaming SPI draws designed for Uno flash/RAM limits
 - USB Serial control at **115200 baud**
-- Header, current-state indicator, and state-specific animation text
+- Compact current-state indicator
 - Manual, one-shot, interactive, and stdin-streaming bridge modes
 - Direct Codex Desktop/CLI lifecycle sync through official Codex hooks
 - Conservative Arduino-aware serial-port discovery that avoids generic USB adapters
+- Verified Serial acknowledgements plus periodic state resynchronization after board resets
 - Low-memory design without a full-screen framebuffer
 - Documented `TFT_eSPI` `User_Setup.h` for the supplied wiring
+- Automated Python regression tests and Arduino Uno compilation in GitHub Actions
 
 ## Demo states
 
@@ -80,8 +87,11 @@ For the full bill of materials, staged power-up checklist, perfboard layout, and
 ## Repository layout
 
 ```text
-arduino/CodexPet/CodexPet.ino  Arduino firmware
-config/User_Setup.h            TFT_eSPI display and pin configuration
+arduino/CodexPet/CodexPet.ino          Arduino firmware
+arduino/CodexPet/pet_demo_rle.h        Original MIT-licensed fallback mascot
+arduino/CodexPet/pet_generated.h      Optional local generated pet (gitignored)
+config/User_Setup.h                     TFT_eSPI display and pin configuration
+tools/convert_codex_pet.py              Codex atlas → Uno RLE header converter
 mac/codex_pet_bridge.py        macOS USB Serial bridge
 mac/codex_pet_hook.py          Codex lifecycle hook event mapper
 mac/codex_pet_daemon.py        Persistent event aggregator and Serial bridge
@@ -94,7 +104,7 @@ docs/CODEX_DESKTOP.md          Direct Codex Desktop/CLI synchronization guide
 
 ### 1. Install and configure TFT_eSPI
 
-Install [`TFT_eSPI`](https://github.com/Bodmer/TFT_eSPI) from the Arduino IDE Library Manager.
+Install [`TFT_eSPI`](https://github.com/Bodmer/TFT_eSPI) **2.5.43** from the Arduino IDE Library Manager. This is the version exercised by the local build and CI checks.
 
 TFT_eSPI keeps controller and pin settings inside the library rather than the sketch. Back up the library's current `User_Setup.h`, then copy this repository's setup into place:
 
@@ -117,7 +127,34 @@ Then select only that file from `TFT_eSPI/User_Setup_Select.h`:
 #include <User_Setups/Setup_CodexPet_Uno_ST7735.h>
 ```
 
-### 2. Upload the firmware
+### 2. Convert your selected Codex pet (optional)
+
+Codex custom pets normally live under `${CODEX_HOME:-$HOME/.codex}/pets/`. Codex Desktop records the active custom pet in `~/.codex/config.toml`, for example:
+
+```toml
+[desktop]
+selected-avatar-id = "custom:sakamata-chloe"
+```
+
+The public repository includes an original MIT-licensed fallback mascot. To build with your own compatible 192×208-cell Codex v2 atlas, generate the gitignored local header:
+
+```bash
+python3 tools/convert_codex_pet.py \
+  --spritesheet "$HOME/.codex/pets/<pet-folder>/spritesheet.webp" \
+  --output arduino/CodexPet/pet_generated.h \
+  --width 86 \
+  --height 94
+```
+
+Requirements and constraints:
+
+- `ffmpeg` must be installed.
+- The converter selects two frames from rows `0` (idle), `6` (waiting), `7` (running), and `8` (review).
+- It emits an 8-colour RGB565 palette plus one-byte RLE runs; the Uno streams pixels directly to the TFT and does not allocate a framebuffer.
+- `pet_generated.h` is intentionally gitignored. Keep it private unless you own or have explicit permission to redistribute the source character art.
+- Recompile after conversion and check flash use. Larger dimensions or additional frames can exceed the Uno's usable 32 KB program space.
+
+### 3. Upload the firmware
 
 1. Open `arduino/CodexPet/CodexPet.ino` in Arduino IDE.
 2. Select **Tools → Board → Arduino Uno**.
@@ -126,7 +163,7 @@ Then select only that file from `TFT_eSPI/User_Setup_Select.h`:
 5. Open Serial Monitor at **115200 baud** with newline enabled.
 6. Send `idle`, `running`, `waiting`, or `review`.
 
-### 3. Install the Mac bridge
+### 4. Install the Mac bridge
 
 ```bash
 cd mac
@@ -160,7 +197,7 @@ printf 'running\nwaiting\nreview\nidle\n' | \
   python3 codex_pet_bridge.py --port auto --stdin
 ```
 
-Opening an Uno serial port usually resets the board. The bridge therefore waits for startup and performs a small `ping` handshake before sending states.
+Opening an Uno serial port usually resets the board. The bridge therefore waits for startup and requires a `pong` handshake before sending states.
 
 ## Connecting a coding workflow
 
@@ -177,7 +214,25 @@ review
 idle
 ```
 
-Keeping one bridge process open avoids resetting the Uno for every transition. A wrapper can send `running` before a task, `waiting` when input is required, `review` during review or test phases, and `idle` on completion.
+Keeping one bridge process open avoids resetting the Uno for every transition. A wrapper can send `running` before a task, `waiting` when input is required, `review` during review or test phases, and `idle` on completion. The Codex daemon also re-sends the current state periodically, so a board reset cannot silently leave the display out of sync.
+
+## Development verification
+
+Run the discoverable Python regression suite and syntax checks:
+
+```bash
+mac/.venv/bin/python -m unittest discover -s tests -v
+PYTHONPYCACHEPREFIX=/tmp/codex-pet-pycache \
+  mac/.venv/bin/python -m py_compile mac/*.py tools/*.py tests/*.py
+```
+
+Compile the firmware against the supplied display configuration:
+
+```bash
+arduino-cli compile --fqbn arduino:avr:uno arduino/CodexPet
+```
+
+GitHub Actions repeats these checks for every push and pull request.
 
 ## TFT troubleshooting
 
@@ -188,6 +243,19 @@ Keeping one bridge process open avoids resetting the Uno for every transition. A
 - **Flicker or corrupted pixels:** shorten wires, verify level shifting, and reduce `SPI_FREQUENCY` from 8 MHz to 4 MHz.
 - **Limited animation performance:** TFT_eSPI is primarily optimised for 32-bit MCUs. The project avoids large buffers so it can use the generic AVR path, but an RP2040 or ESP32 provides smoother animation and more room for sprites.
 
+## Arduino Uno R3 capacity notes
+
+The Uno R3 is deliberately small by modern standards:
+
+- ATmega328P program flash: **32 KB total**
+- Bootloader reservation: roughly **0.5 KB**, leaving **32,256 bytes** for a normal sketch
+- SRAM: **2 KB**
+- EEPROM: **1 KB**
+
+A full 128×160 RGB565 framebuffer alone needs **40,960 bytes**, so it cannot fit in Uno SRAM. A locally generated custom-pet build can store eight `86×94` frames in program flash using an 8-colour palette and RLE, then stream each decoded frame directly to the TFT. The verified custom build currently uses approximately **30 KB (93%) flash** and **507 bytes (24%) SRAM**; the smaller public fallback build leaves more flash free. The exact numbers printed by your toolchain are authoritative.
+
+This is enough for a large two-frame loop in each of the four states, but not for the complete 8×11 desktop atlas. For full-frame-count animation, smoother motion, richer colour, or runtime loading from storage, use a board such as an RP2040 or ESP32 with substantially more flash and RAM.
+
 ## Ideas for expansion
 
 - Add `success`, `error`, `sleeping`, or notification states
@@ -196,12 +264,12 @@ Keeping one bridge process open avoids resetting the Uno for every transition. A
 - Move to RP2040 or ESP32 for `TFT_eSprite` double buffering
 - Add a buzzer, buttons, rotary encoder, or ambient-light sensor
 - Control the backlight through a suitable transistor or MOSFET
-- Extend the protocol with heartbeats, sequence IDs, and timeout fallback
+- Extend the protocol with sequence IDs and an explicit firmware-side timeout fallback
 - Build Linux and Windows serial bridge adapters
 
 ## Compatibility notes
 
-TFT_eSPI describes itself as a library for 32-bit processors, while its current source also contains a generic AVR path. This project is intentionally conservative for the Uno's 2 KB SRAM and does not allocate a 128×160 framebuffer. For a new build where the microcontroller is flexible, RP2040 or ESP32 is recommended.
+TFT_eSPI describes itself as a library for 32-bit processors, while its current source also contains a generic AVR path. This project uses that generic AVR path and avoids a framebuffer. With TFT_eSPI 2.5.43, the supplied setup, and a locally generated eight-frame `86×94` pet header, the verified custom build uses about 30 KB (93%) of flash and 507 bytes (24%) of SRAM. The public fallback mascot uses less flash. For a new build where the microcontroller is flexible, RP2040 or ESP32 is recommended.
 
 ## Contributing
 
