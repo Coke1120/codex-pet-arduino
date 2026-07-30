@@ -96,6 +96,46 @@ docs/CODEX_DESKTOP.md          Direct Codex Desktop/CLI synchronization guide
 
 ## Quick start
 
+## AI-agent handover prompt
+
+Paste the following prompt into Codex, Hermes, Claude Code, or another local AI coding agent when you want it to install, regenerate, repair, or verify this project:
+
+```text
+Install or maintain the Codex Pet Arduino project from:
+https://github.com/Coke1120/codex-pet-arduino
+
+Work autonomously until the physical pet is working, but preserve unrelated local changes and do not publish private/custom character artwork.
+
+Environment and hardware:
+- Target board: Arduino Uno R3 (`arduino:avr:uno`).
+- Display: 1.8-inch 128x160 ST7735S SPI TFT.
+- Firmware pins: CS=D10, DC=D8, RST=D9, MOSI/SDA=D11, SCK/SCL=D13.
+- First run `arduino-cli board list` and use only the port identified as Arduino UNO.
+- Inspect the exact TFT breakout before wiring. If it is explicitly confirmed 5V-compatible for VDD, logic inputs and BLK, use the README direct wiring. Otherwise use the optional 3.3V + level-translator path in docs/HARDWARE.md. Never infer 5V tolerance from the ST7735S controller name alone.
+
+Selected Codex pet:
+- Read `${CODEX_HOME:-$HOME/.codex}/config.toml` or `~/.codex/config.toml` and find `[desktop].selected-avatar-id`.
+- Resolve that pet under `${CODEX_HOME:-$HOME/.codex}/pets/`.
+- Run `tools/convert_codex_pet.py` against its `spritesheet.webp` to create the gitignored `arduino/CodexPet/pet_generated.h` at 86x94.
+- Do not commit or publish `pet_generated.h` unless redistribution rights are explicit.
+
+Build and host integration:
+- Install TFT_eSPI 2.5.43 and apply `config/User_Setup.h`.
+- Compile the public fallback once without `pet_generated.h`, then compile the local custom build with it present. Report flash and SRAM for both.
+- Upload the local custom build.
+- Create/use the Python venv under `mac/.venv`, install `mac/requirements.txt`, and run all tests plus syntax checks.
+- Configure or merge Codex hooks from `examples/codex-hooks.json`; do not overwrite unrelated hooks.
+- Install the daemon runtime under `~/Library/Application Support/CodexPet/runtime` and a user LaunchAgent following `docs/CODEX_DESKTOP.md`.
+
+Verification:
+- Use one persistent Serial session at 115200 baud.
+- Require exact `pong` and `OK IDLE/RUNNING/WAITING/REVIEW` replies.
+- Visually verify a large moving pet, compact status bar, correct orientation/colours, no full-screen blink, and all four states.
+- Confirm the LaunchAgent is running and lifecycle events move running -> review/waiting -> idle.
+- Run: Python tests, Python syntax, both Uno compiles, converter reproducibility, `git diff --check`, and secret/absolute-path scans.
+- If asked to publish, review the final diff, keep custom artwork private, commit, push, and watch GitHub Actions to success.
+```
+
 ### 1. Install and configure TFT_eSPI
 
 Install [`TFT_eSPI`](https://github.com/Bodmer/TFT_eSPI) **2.5.43** from the Arduino IDE Library Manager. This is the version exercised by the local build and CI checks.
@@ -213,46 +253,6 @@ idle
 ```
 
 Keeping one bridge process open avoids resetting the Uno for every transition. A wrapper can send `running` before a task, `waiting` when input is required, `review` during review or test phases, and `idle` on completion. The Codex daemon also re-sends the current state periodically, so a board reset cannot silently leave the display out of sync.
-
-## AI-agent handover prompt
-
-Paste the following prompt into Codex, Hermes, Claude Code, or another local AI coding agent when you want it to install, regenerate, repair, or verify this project:
-
-```text
-Install or maintain the Codex Pet Arduino project from:
-https://github.com/Coke1120/codex-pet-arduino
-
-Work autonomously until the physical pet is working, but preserve unrelated local changes and do not publish private/custom character artwork.
-
-Environment and hardware:
-- Target board: Arduino Uno R3 (`arduino:avr:uno`).
-- Display: 1.8-inch 128x160 ST7735S SPI TFT.
-- Firmware pins: CS=D10, DC=D8, RST=D9, MOSI/SDA=D11, SCK/SCL=D13.
-- First run `arduino-cli board list` and use only the port identified as Arduino UNO.
-- Inspect the exact TFT breakout before wiring. If it is explicitly confirmed 5V-compatible for VDD, logic inputs and BLK, use the README direct wiring. Otherwise use the optional 3.3V + level-translator path in docs/HARDWARE.md. Never infer 5V tolerance from the ST7735S controller name alone.
-
-Selected Codex pet:
-- Read `${CODEX_HOME:-$HOME/.codex}/config.toml` or `~/.codex/config.toml` and find `[desktop].selected-avatar-id`.
-- Resolve that pet under `${CODEX_HOME:-$HOME/.codex}/pets/`.
-- Run `tools/convert_codex_pet.py` against its `spritesheet.webp` to create the gitignored `arduino/CodexPet/pet_generated.h` at 86x94.
-- Do not commit or publish `pet_generated.h` unless redistribution rights are explicit.
-
-Build and host integration:
-- Install TFT_eSPI 2.5.43 and apply `config/User_Setup.h`.
-- Compile the public fallback once without `pet_generated.h`, then compile the local custom build with it present. Report flash and SRAM for both.
-- Upload the local custom build.
-- Create/use the Python venv under `mac/.venv`, install `mac/requirements.txt`, and run all tests plus syntax checks.
-- Configure or merge Codex hooks from `examples/codex-hooks.json`; do not overwrite unrelated hooks.
-- Install the daemon runtime under `~/Library/Application Support/CodexPet/runtime` and a user LaunchAgent following `docs/CODEX_DESKTOP.md`.
-
-Verification:
-- Use one persistent Serial session at 115200 baud.
-- Require exact `pong` and `OK IDLE/RUNNING/WAITING/REVIEW` replies.
-- Visually verify a large moving pet, compact status bar, correct orientation/colours, no full-screen blink, and all four states.
-- Confirm the LaunchAgent is running and lifecycle events move running -> review/waiting -> idle.
-- Run: Python tests, Python syntax, both Uno compiles, converter reproducibility, `git diff --check`, and secret/absolute-path scans.
-- If asked to publish, review the final diff, keep custom artwork private, commit, push, and watch GitHub Actions to success.
-```
 
 ## Development verification
 
