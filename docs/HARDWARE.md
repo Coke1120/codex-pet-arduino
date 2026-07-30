@@ -1,70 +1,88 @@
 # Hardware, safe wiring, and enclosure
 
-This guide covers the verified hardware variant used during project bring-up:
+This guide covers the hardware variant used during project bring-up:
 
 - Arduino Uno R3 / ATmega328P
 - 1.8-inch 128 × 160 SPI TFT
 - PCB silk: `Driver IC: ST7735S`
 - TFT pin order: `BLK CS DC RST SDA SCL VDD GND`
 
-The TFT photographs show no regulator in the visible `VDD` path and no level-shifting components on `CS`, `DC`, `RST`, `SDA`, or `SCL`. The small `R1/R2/R3/Q1` group appears to serve the backlight, not the five logic lines. Treat this module as 3.3V-only unless the exact seller schematic proves otherwise.
+The exact breakout matters more than the controller name. The current photographed module has been user-confirmed as 5V-compatible and works directly from the Uno. A generic bare ST7735S controller is normally 3.3V logic, so do not assume another visually similar breakout accepts 5V power, 5V GPIO, or direct 5V backlight drive.
 
 ## Minimal bill of materials
 
-If you already have the Uno, TFT, USB cable, wire, soldering supplies, and prototyping jumpers, the minimal additional purchase is:
+For the verified 5V-compatible module:
 
-- 1 × TXS0108E 8-channel level-shifter module, preferably with downward-soldered 2.54 mm pins
-- 2.54 mm female header strips, enough to socket the TXS0108E and TFT
-- 1 × 2.54 mm single-sided tinned perfboard, approximately 5 × 7 cm
+- Arduino Uno R3
+- 1.8-inch ST7735S TFT module
+- USB cable
+- short Dupont/breadboard wires
+- 2.54 mm headers
+- optional 2.54 mm perfboard, approximately 5 × 7 cm, for the permanent build
 
-This is enough for initial operation using the Uno's 3.3V output. That rail is limited to about 50 mA, so measure or observe the finished load. Add a dedicated regulated 3.3V supply if the rail sags, the Uno resets, the TFT flickers, the backlight is unstable, or any component becomes unusually warm.
+A `TXS0108E` is **not required** for the verified direct-wired module. Use a suitable 5V-to-3.3V translator only when another TFT breakout's logic inputs are not confirmed 5V-compatible.
 
-Useful but optional final-build parts include 26–28 AWG colour-coded wire, heat-shrink tubing, nylon standoffs and screws, strain relief, 100 nF and 10 µF decoupling capacitors, and removable connectors.
+Useful final-build parts include 26–28 AWG colour-coded wire, heat-shrink tubing, nylon standoffs and screws, strain relief, 100 nF and 10 µF decoupling capacitors, and removable connectors.
 
-## TXS0108E wiring
-
-The low-voltage side is **A/VCCA**. The Uno side is **B/VCCB**.
+## Direct wiring for the verified module
 
 ### Power
 
 ```text
-Uno 3.3V ──┬── TXS0108E VCCA
-            ├── TXS0108E OE
-            ├── TFT VDD
-            └── TFT BLK (initial test)
+Uno 5V  ──┬── TFT VDD
+           └── TFT BLK  (only because this module is confirmed for direct 5V)
 
-Uno 5V ─────── TXS0108E VCCB
-
-Uno GND ───┬── TXS0108E GND
-            └── TFT GND
+Uno GND ───── TFT GND
 ```
-
-All grounds must be common. `VCCA` must not exceed `VCCB`. Do not reverse the A and B supplies. Never insert or remove wiring while powered.
 
 ### Signals
 
 ```text
+Uno D10 ── TFT CS
+Uno D8  ── TFT DC
+Uno D9  ── TFT RST
+Uno D11 ── TFT SDA (MOSI)
+Uno D13 ── TFT SCL (SCK)
+```
+
+Keep `SDA` and `SCL` short. The project starts at an 8 MHz SPI clock; reduce `SPI_FREQUENCY` in `config/User_Setup.h` to 4 MHz if long prototype wiring produces noise.
+
+## When a level translator is required
+
+Use a translator such as a push-pull-capable `TXS0108E`-class module when the seller documentation or electrical inspection does **not** establish 5V-compatible TFT logic inputs.
+
+For that optional path:
+
+```text
+Uno 3.3V ──┬── translator VCCA
+            ├── translator OE
+            ├── TFT VDD
+            └── TFT BLK (only if appropriate for that module)
+
+Uno 5V ─────── translator VCCB
+Uno GND ───┬── translator GND
+            └── TFT GND
+
 Uno D10 ── B1 | A1 ── TFT CS
 Uno D8  ── B2 | A2 ── TFT DC
 Uno D9  ── B3 | A3 ── TFT RST
-Uno D11 ── B4 | A4 ── TFT SDA (MOSI)
-Uno D13 ── B5 | A5 ── TFT SCL (SCK)
+Uno D11 ── B4 | A4 ── TFT SDA
+Uno D13 ── B5 | A5 ── TFT SCL
 ```
 
-Channels 6–8 remain unused. Keep wires short, particularly `SDA` and `SCL`. The project starts at an 8 MHz SPI clock; reduce `SPI_FREQUENCY` in `config/User_Setup.h` to 4 MHz if long prototype wiring produces noise.
+All grounds must be common. Never insert or remove wiring while powered. The Uno's 3.3V rail is limited, so use a properly sized regulated 3.3V supply if the TFT/backlight load causes voltage sag, resets, flicker, or heating.
 
 ## Safe bring-up checklist
 
-1. Leave the TFT disconnected.
-2. Compile and upload the sketch to the port that `arduino-cli board list` identifies as Arduino UNO.
+1. Confirm the exact TFT breakout's power, logic-level, and backlight requirements.
+2. Leave the TFT disconnected; compile and upload to the port that `arduino-cli board list` identifies as Arduino UNO.
 3. Verify `ping`, `status`, `running`, `waiting`, `review`, and `idle` over Serial.
 4. Disconnect USB power.
-5. Wire the common ground, TXS0108E supply rails, and `OE`.
-6. Wire all five B-to-A translated signals; check `DC → D8` and `RST → D9` carefully.
-7. Connect TFT `VDD` and `BLK` to the 3.3V rail.
-8. Inspect every connection for shorts and reversed A/B supplies before reconnecting USB.
-9. Power briefly. Stop immediately for heat, smell, resets, flicker, or an unstable USB connection.
-10. Test all four display states, orientation, RGB/BGR order, offsets, and continuous operation.
+5. Wire common ground and power for the chosen direct or translated path.
+6. Wire `CS`, `DC`, `RST`, `SDA/MOSI`, and `SCL/SCK`; check `DC → D8` and `RST → D9` carefully.
+7. Inspect every connection for shorts before reconnecting USB.
+8. Power briefly. Stop immediately for heat, smell, resets, flicker, or an unstable USB connection.
+9. Test all four display states, orientation, RGB/BGR order, offsets, and continuous operation.
 
 A white illuminated panel only confirms that the backlight is on. It does not confirm controller initialization or correct SPI wiring.
 
@@ -72,18 +90,18 @@ A white illuminated panel only confirms that the backlight is on. It does not co
 
 Prototype on a breadboard first. Once the display is electrically and visually stable:
 
-1. Plan separate 5V, 3.3V, and GND buses on the perfboard.
-2. Socket the TXS0108E and TFT with female headers rather than soldering serviceable modules permanently.
-3. Keep translated SPI traces short and colour-coded.
-4. Add strain relief to cables and use nylon standoffs so no PCB underside contacts the enclosure.
+1. Plan the required power and GND buses for the exact module.
+2. Socket the TFT and any optional translator with female headers rather than soldering serviceable modules permanently.
+3. Keep SPI traces short and colour-coded.
+4. Add strain relief and nylon standoffs so no PCB underside contacts the enclosure.
 5. Check continuity and absence of shorts with power removed.
 6. Repeat the complete Serial and visual test, followed by a continuous run test.
 
-Do not use a perfboard as a substitute for level conversion, and do not use a resistor divider as a regulated TFT power supply.
+A perfboard distributes and mounts components; it does not provide voltage regulation or level conversion by itself.
 
 ## Enclosure
 
-Choose or design the case only after the perfboard assembly passes testing. Measure:
+Choose or design the case only after the final assembly passes testing. Measure:
 
 - TFT PCB width, height, thickness, mounting-hole spacing, and active-area offset
 - final perfboard footprint and component height
@@ -96,12 +114,12 @@ Suggested stack:
 
 ```text
 front:  ST7735S and display bezel
-middle: perfboard, TXS0108E, and wiring
+middle: optional perfboard and short wiring
 rear:   Arduino Uno with USB and reset access
 ```
 
 ## Verified boundary
 
-The current reference firmware has been compiled for `arduino:avr:uno`, uploaded to an identified Arduino Uno R3, and exercised over Serial for all four states plus `ping`. The photographed ST7735S now displays the converted custom-pet frames with the expected orientation, colours, compact status bar, and continuous two-frame state loops. The current physical prototype uses the TXS0108E wiring above.
+The firmware has been compiled for `arduino:avr:uno`, uploaded to an identified Arduino Uno R3, and exercised over Serial for all four states plus `ping`. The user-confirmed 5V-compatible ST7735S module displays the converted custom-pet frames with the expected orientation, colours, compact status bar, and continuous two-frame state loops.
 
-A permanent perfboard/enclosure build still needs its own continuity check, current/voltage measurement, strain relief, and continuous-run verification. Different TFT breakout revisions or user-supplied pet atlases may require different tab, colour-order, electrical, or asset-conversion settings.
+The direct-wiring instructions apply only to that confirmed breakout. A permanent perfboard/enclosure build still needs its own continuity check, current/voltage measurement, strain relief, and continuous-run verification. Other TFT breakout revisions may require level translation, different power/backlight wiring, or different tab/colour-order settings.

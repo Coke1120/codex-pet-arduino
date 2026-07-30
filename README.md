@@ -32,10 +32,10 @@ The current reference build can use the locally selected **Sakamata Chloe** Code
 
 | Command | Display behaviour | Suggested meaning |
 |---|---|---|
-| `idle` | Gentle breathing, blinking, and heart | Ready or finished |
-| `running` | Fast leg motion and speed lines | Coding or executing |
-| `waiting` | Thought bubble and blinking | Waiting for user input |
-| `review` | Animated document scan | Reviewing code or tests |
+| `idle` | Quiet two-frame loop | Ready or finished |
+| `running` | Active two-frame work loop | Coding or executing |
+| `waiting` | Expectant two-frame loop | Waiting for user input |
+| `review` | Focused two-frame loop | Reviewing code or tests |
 
 Additional diagnostic commands are `ping` and `status`.
 
@@ -45,8 +45,8 @@ Additional diagnostic commands are `ping` and `status`.
 - 1.8-inch ST7735 TFT, 128×160 pixels
 - USB cable for power and Serial data
 - Breadboard wires
-- One `TXS0108E` 8-channel level-shifter module (or another translator explicitly rated for 5 V/3.3 V push-pull SPI)
-- 2.54 mm female headers and, for the permanent build, a 2.54 mm perfboard (about 5 × 7 cm)
+- 2.54 mm headers and, for a permanent build, a 2.54 mm perfboard (about 5 × 7 cm)
+- Optional: a `TXS0108E` or another translator explicitly rated for 5 V/3.3 V push-pull SPI when the TFT logic inputs are not confirmed 5V-compatible
 
 ### Wiring
 
@@ -56,33 +56,27 @@ The photographed breakout is marked `Driver IC: ST7735S` and has this physical p
 BLK  CS  DC  RST  SDA  SCL  VDD  GND
 ```
 
-Its visible PCB does not show a regulator or level shifting on the five logic inputs. Use the TXS0108E as follows. The Uno connects to the high-voltage **B** side and the TFT connects to the low-voltage **A** side.
+The photographed module used for the current working prototype has been user-confirmed as 5V-compatible, so the reference wiring can connect it directly to the Uno:
 
-| Arduino Uno R3 | TXS0108E | TXS0108E | ST7735S | Function |
-|---:|---:|---:|---:|---|
-| D10 | B1 | A1 | CS | Chip select |
-| D8 | B2 | A2 | DC | Data/command |
-| D9 | B3 | A3 | RST | Reset |
-| D11 | B4 | A4 | SDA | Hardware SPI MOSI |
-| D13 | B5 | A5 | SCL | Hardware SPI clock |
+| Arduino Uno R3 | ST7735S | Function |
+|---:|---:|---|
+| D10 | CS | Chip select |
+| D8 | DC | Data/command |
+| D9 | RST | Reset |
+| D11 | SDA | Hardware SPI MOSI |
+| D13 | SCL | Hardware SPI clock |
+| 5V | VDD | Module power |
+| 5V | BLK | Backlight, only when the module specifies direct 5V support/current limiting |
+| GND | GND | Common ground |
 
-Power wiring:
-
-| Source | Destination |
-|---|---|
-| Uno 3.3V | TXS0108E `VCCA`, `OE`; TFT `VDD`; TFT `BLK` for initial testing |
-| Uno 5V | TXS0108E `VCCB` |
-| Uno GND | TXS0108E `GND`; TFT `GND` |
-
-Leave channels 6–8 unconnected. Keep `SDA` and `SCL` short. Do not add resistor dividers when using the TXS0108E.
+Keep `SDA` and `SCL` short. The project starts at an 8 MHz SPI clock; reduce `SPI_FREQUENCY` in `config/User_Setup.h` to 4 MHz if long prototype wiring produces noise.
 
 > [!CAUTION]
-> The Uno R3 uses **5V GPIO logic**, while this bare ST7735S breakout exposes 3.3V logic without visible translation. Do not connect Uno GPIO directly to `CS`, `DC`, `RST`, `SDA`, or `SCL`, and do not connect this board's `VDD` to 5V. A lit white screen proves only that the backlight has power.
+> A generic bare ST7735S controller is 3.3V logic. Direct Uno wiring is appropriate only for a breakout whose seller documentation or verified hardware confirms 5V-compatible `VDD`, logic inputs, and backlight. If that is not established, use a suitable level translator and 3.3V supply instead. A lit white screen proves only that the backlight has power.
 
-> [!NOTE]
-> The Uno R3 3.3V pin is limited to about 50 mA. It is acceptable for a cautious initial test, but TFT plus backlight current depends on the actual module. Stop if the board resets, the display flickers, the 3.3V rail sags, or anything becomes unusually warm; use a properly sized external 3.3V regulator for the final build if needed.
+For the full bill of materials, staged power-up checklist, optional translated wiring, perfboard layout, and enclosure guidance, see [`docs/HARDWARE.md`](docs/HARDWARE.md).
 
-For the full bill of materials, staged power-up checklist, perfboard layout, and enclosure guidance, see [`docs/HARDWARE.md`](docs/HARDWARE.md).
+![Arduino Uno R3 to ST7735S direct wiring](docs/images/uno-r3-st7735-direct-wiring.svg)
 
 ## Repository layout
 
@@ -154,6 +148,10 @@ Requirements and constraints:
 - `pet_generated.h` is intentionally gitignored. Keep it private unless you own or have explicit permission to redistribute the source character art.
 - Recompile after conversion and check flash use. Larger dimensions or additional frames can exceed the Uno's usable 32 KB program space.
 
+The firmware automatically uses `pet_generated.h` when present; otherwise it builds with the original fallback mascot.
+
+![TFT demo display](docs/images/tft-demo-display.svg)
+
 ### 3. Upload the firmware
 
 1. Open `arduino/CodexPet/CodexPet.ino` in Arduino IDE.
@@ -216,6 +214,46 @@ idle
 
 Keeping one bridge process open avoids resetting the Uno for every transition. A wrapper can send `running` before a task, `waiting` when input is required, `review` during review or test phases, and `idle` on completion. The Codex daemon also re-sends the current state periodically, so a board reset cannot silently leave the display out of sync.
 
+## AI-agent handover prompt
+
+Paste the following prompt into Codex, Hermes, Claude Code, or another local AI coding agent when you want it to install, regenerate, repair, or verify this project:
+
+```text
+Install or maintain the Codex Pet Arduino project from:
+https://github.com/Coke1120/codex-pet-arduino
+
+Work autonomously until the physical pet is working, but preserve unrelated local changes and do not publish private/custom character artwork.
+
+Environment and hardware:
+- Target board: Arduino Uno R3 (`arduino:avr:uno`).
+- Display: 1.8-inch 128x160 ST7735S SPI TFT.
+- Firmware pins: CS=D10, DC=D8, RST=D9, MOSI/SDA=D11, SCK/SCL=D13.
+- First run `arduino-cli board list` and use only the port identified as Arduino UNO.
+- Inspect the exact TFT breakout before wiring. If it is explicitly confirmed 5V-compatible for VDD, logic inputs and BLK, use the README direct wiring. Otherwise use the optional 3.3V + level-translator path in docs/HARDWARE.md. Never infer 5V tolerance from the ST7735S controller name alone.
+
+Selected Codex pet:
+- Read `${CODEX_HOME:-$HOME/.codex}/config.toml` or `~/.codex/config.toml` and find `[desktop].selected-avatar-id`.
+- Resolve that pet under `${CODEX_HOME:-$HOME/.codex}/pets/`.
+- Run `tools/convert_codex_pet.py` against its `spritesheet.webp` to create the gitignored `arduino/CodexPet/pet_generated.h` at 86x94.
+- Do not commit or publish `pet_generated.h` unless redistribution rights are explicit.
+
+Build and host integration:
+- Install TFT_eSPI 2.5.43 and apply `config/User_Setup.h`.
+- Compile the public fallback once without `pet_generated.h`, then compile the local custom build with it present. Report flash and SRAM for both.
+- Upload the local custom build.
+- Create/use the Python venv under `mac/.venv`, install `mac/requirements.txt`, and run all tests plus syntax checks.
+- Configure or merge Codex hooks from `examples/codex-hooks.json`; do not overwrite unrelated hooks.
+- Install the daemon runtime under `~/Library/Application Support/CodexPet/runtime` and a user LaunchAgent following `docs/CODEX_DESKTOP.md`.
+
+Verification:
+- Use one persistent Serial session at 115200 baud.
+- Require exact `pong` and `OK IDLE/RUNNING/WAITING/REVIEW` replies.
+- Visually verify a large moving pet, compact status bar, correct orientation/colours, no full-screen blink, and all four states.
+- Confirm the LaunchAgent is running and lifecycle events move running -> review/waiting -> idle.
+- Run: Python tests, Python syntax, both Uno compiles, converter reproducibility, `git diff --check`, and secret/absolute-path scans.
+- If asked to publish, review the final diff, keep custom artwork private, commit, push, and watch GitHub Actions to success.
+```
+
 ## Development verification
 
 Run the discoverable Python regression suite and syntax checks:
@@ -236,11 +274,11 @@ GitHub Actions repeats these checks for every push and pull request.
 
 ## TFT troubleshooting
 
-- **Lit white screen:** the backlight is powered but the controller has not initialized. Check common ground, the TXS0108E rails and `OE`, A/B orientation, `CS/DC/RST`, `MOSI/SCK`, and confirm `DC → D8`, `RST → D9`.
-- **Unlit black screen:** check `VDD`, `BLK`, ground, and the 3.3V rail before debugging SPI.
+- **Lit white screen:** the backlight is powered but the controller has not initialized. Check common ground, `CS/DC/RST`, `MOSI/SCK`, and confirm `DC → D8`, `RST → D9`. If using a translator, also check its rails, enable pin, and A/B orientation.
+- **Unlit black screen:** check `VDD`, `BLK`, ground, and the module's documented supply voltage before debugging SPI.
 - **Shifted or cropped image:** try one of `ST7735_BLACKTAB`, `ST7735_GREENTAB`, or `ST7735_GREENTAB2` instead of `ST7735_REDTAB`. Enable only one.
 - **Red and blue swapped:** enable `#define TFT_RGB_ORDER TFT_BGR` in `User_Setup.h`.
-- **Flicker or corrupted pixels:** shorten wires, verify level shifting, and reduce `SPI_FREQUENCY` from 8 MHz to 4 MHz.
+- **Flicker or corrupted pixels:** shorten wires, verify voltage compatibility (and level translation when required), and reduce `SPI_FREQUENCY` from 8 MHz to 4 MHz.
 - **Limited animation performance:** TFT_eSPI is primarily optimised for 32-bit MCUs. The project avoids large buffers so it can use the generic AVR path, but an RP2040 or ESP32 provides smoother animation and more room for sprites.
 
 ## Arduino Uno R3 capacity notes

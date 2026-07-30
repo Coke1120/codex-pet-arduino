@@ -79,6 +79,7 @@ The hook always exits successfully and never makes allow/deny decisions, so a di
 macOS may deny background LaunchAgents access to source code kept under `Documents`. For a reliable service, install a small runtime copy under `~/Library/Application Support/CodexPet/runtime`, then copy [`examples/org.example.codex-pet.plist`](../examples/org.example.codex-pet.plist), replace its runtime paths, and install it as a per-user LaunchAgent:
 
 ```bash
+cd /path/to/codex-pet-arduino
 RUNTIME="$HOME/Library/Application Support/CodexPet/runtime"
 mkdir -p "$RUNTIME"
 python3 -m venv "$RUNTIME"
