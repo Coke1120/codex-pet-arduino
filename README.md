@@ -66,7 +66,7 @@ The photographed module used for the current working prototype has been user-con
 | D11 | SDA | Hardware SPI MOSI |
 | D13 | SCL | Hardware SPI clock |
 | 5V | VDD | Module power |
-| 5V | BLK | Backlight, only when the module specifies direct 5V support/current limiting |
+| 3.3V | BLK | Backlight supply for the verified module |
 | GND | GND | Common ground |
 
 Keep `SDA` and `SCL` short. The project starts at an 8 MHz SPI clock; reduce `SPI_FREQUENCY` in `config/User_Setup.h` to 4 MHz if long prototype wiring produces noise.
@@ -111,7 +111,7 @@ Environment and hardware:
 - Display: 1.8-inch 128x160 ST7735S SPI TFT.
 - Firmware pins: CS=D10, DC=D8, RST=D9, MOSI/SDA=D11, SCK/SCL=D13.
 - First run `arduino-cli board list` and use only the port identified as Arduino UNO.
-- Inspect the exact TFT breakout before wiring. If it is explicitly confirmed 5V-compatible for VDD, logic inputs and BLK, use the README direct wiring. Otherwise use the optional 3.3V + level-translator path in docs/HARDWARE.md. Never infer 5V tolerance from the ST7735S controller name alone.
+- Inspect the exact TFT breakout before wiring. For the verified module, use VDD=5V and BLK=3.3V; direct Uno GPIO is acceptable because its logic inputs were confirmed 5V-compatible. Otherwise use the optional 3.3V + level-translator path in docs/HARDWARE.md. Never infer 5V tolerance from the ST7735S controller name alone.
 
 Selected Codex pet:
 - Read `${CODEX_HOME:-$HOME/.codex}/config.toml` or `~/.codex/config.toml` and find `[desktop].selected-avatar-id`.

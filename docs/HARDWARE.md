@@ -7,7 +7,7 @@ This guide covers the hardware variant used during project bring-up:
 - PCB silk: `Driver IC: ST7735S`
 - TFT pin order: `BLK CS DC RST SDA SCL VDD GND`
 
-The exact breakout matters more than the controller name. The current photographed module has been user-confirmed as 5V-compatible and works directly from the Uno. A generic bare ST7735S controller is normally 3.3V logic, so do not assume another visually similar breakout accepts 5V power, 5V GPIO, or direct 5V backlight drive.
+The exact breakout matters more than the controller name. The current photographed module has been user-confirmed to accept 5V at `VDD` and direct Uno GPIO; its verified backlight connection is `BLK → 3.3V`. A generic bare ST7735S controller is normally 3.3V logic, so do not assume another visually similar breakout accepts 5V power or 5V GPIO.
 
 ## Minimal bill of materials
 
@@ -29,9 +29,8 @@ Useful final-build parts include 26–28 AWG colour-coded wire, heat-shrink tubi
 ### Power
 
 ```text
-Uno 5V  ──┬── TFT VDD
-           └── TFT BLK  (only because this module is confirmed for direct 5V)
-
+Uno 5V  ───── TFT VDD
+Uno 3.3V ──── TFT BLK
 Uno GND ───── TFT GND
 ```
 
@@ -122,4 +121,4 @@ rear:   Arduino Uno with USB and reset access
 
 The firmware has been compiled for `arduino:avr:uno`, uploaded to an identified Arduino Uno R3, and exercised over Serial for all four states plus `ping`. The user-confirmed 5V-compatible ST7735S module displays the converted custom-pet frames with the expected orientation, colours, compact status bar, and continuous two-frame state loops.
 
-The direct-wiring instructions apply only to that confirmed breakout. A permanent perfboard/enclosure build still needs its own continuity check, current/voltage measurement, strain relief, and continuous-run verification. Other TFT breakout revisions may require level translation, different power/backlight wiring, or different tab/colour-order settings.
+The direct-wiring instructions apply only to that confirmed breakout: `VDD → 5V`, `BLK → 3.3V`, and the five SPI/control signals directly from Uno GPIO. A permanent perfboard/enclosure build still needs its own continuity check, current/voltage measurement, strain relief, and continuous-run verification. Other TFT breakout revisions may require level translation, different power/backlight wiring, or different tab/colour-order settings.

@@ -16,8 +16,8 @@
     <path d="M486 370 C650 370 720 346 905 346" stroke="#ffd43b"/>
     <path d="M486 435 C650 435 720 411 905 411" stroke="#6ee7b7"/>
     <path d="M486 500 C650 500 720 476 905 476" stroke="#60a5fa"/>
-    <path d="M486 565 H670 M670 565 C740 565 780 541 905 541 M670 565 C740 565 780 606 905 606" stroke="#ef4444"/>
-    <circle cx="670" cy="565" r="10" fill="#ef4444" stroke="none"/>
+    <path d="M486 565 C650 565 720 541 905 541" stroke="#ef4444"/>
+    <path d="M486 630 C650 630 720 606 905 606" stroke="#a78bfa"/>
     <path d="M486 695 C650 695 720 671 905 671" stroke="#94a3b8"/>
   </g>
 
@@ -40,6 +40,7 @@
       <g fill="#bff5df"><circle cx="450" cy="435" r="11"/><text x="420" y="441" text-anchor="end">D11</text></g>
       <g fill="#bfdbfe"><circle cx="450" cy="500" r="11"/><text x="420" y="506" text-anchor="end">D13</text></g>
       <g fill="#fecaca"><circle cx="450" cy="565" r="11"/><text x="420" y="571" text-anchor="end">5V</text></g>
+      <g fill="#ddd6fe"><circle cx="450" cy="630" r="11"/><text x="420" y="636" text-anchor="end">3.3V</text></g>
       <g fill="#cbd5e1"><circle cx="450" cy="695" r="11"/><text x="420" y="701" text-anchor="end">GND</text></g>
     </g>
   </g>
@@ -60,15 +61,15 @@
       <g fill="#fff3ad"><circle cx="925" cy="346" r="11"/><text x="950" y="352">RST</text></g>
       <g fill="#bff5df"><circle cx="925" cy="411" r="11"/><text x="950" y="417">SDA / MOSI</text></g>
       <g fill="#bfdbfe"><circle cx="925" cy="476" r="11"/><text x="950" y="482">SCL / SCK</text></g>
-      <g fill="#fecaca"><circle cx="925" cy="541" r="11"/><text x="950" y="547">VDD</text></g>
-      <g fill="#fecaca"><circle cx="925" cy="606" r="11"/><text x="950" y="612">BLK</text></g>
+      <g fill="#fecaca"><circle cx="925" cy="541" r="11"/><text x="950" y="547">VDD (5V)</text></g>
+      <g fill="#ddd6fe"><circle cx="925" cy="606" r="11"/><text x="950" y="612">BLK (3.3V)</text></g>
       <g fill="#cbd5e1"><circle cx="925" cy="671" r="11"/><text x="950" y="677">GND</text></g>
     </g>
   </g>
 
   <g font-family="Arial,sans-serif">
     <rect x="70" y="806" width="1260" height="58" rx="14" fill="#3a1720" stroke="#fb7185" stroke-width="2"/>
-    <text x="700" y="833" text-anchor="middle" fill="#ffe4e6" font-size="20" font-weight="700">5V DIRECT ONLY FOR A VERIFIED 5V-COMPATIBLE BREAKOUT</text>
-    <text x="700" y="855" text-anchor="middle" fill="#fecdd3" font-size="15">Otherwise use 3.3V power and suitable level translation — see docs/HARDWARE.md</text>
+    <text x="700" y="833" text-anchor="middle" fill="#ffe4e6" font-size="20" font-weight="700">VERIFIED MODULE: VDD = 5V · BLK = 3.3V</text>
+    <text x="700" y="855" text-anchor="middle" fill="#fecdd3" font-size="15">Direct 5V GPIO is breakout-specific — otherwise use 3.3V and level translation</text>
   </g>
 </svg>
