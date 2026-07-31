@@ -1,5 +1,7 @@
 # Direct Codex Desktop and CLI synchronization
 
+The Python hook and Serial daemon support both macOS and Windows. This page covers the shared design and macOS service setup; Windows users should follow [`WINDOWS.md`](WINDOWS.md).
+
 The basic `codex_pet_bridge.py` is intentionally manual: it sends only the state supplied through `--state`, `--interactive`, or `--stdin`. It does not inspect Codex Desktop automatically.
 
 For direct reflection, this repository uses the official Codex lifecycle hooks documented at <https://developers.openai.com/codex/hooks>:
@@ -37,6 +39,8 @@ The hook stores only a hashed session key, mapped state, event name, and timesta
 
 It does **not** store prompts, assistant messages, tool output, transcript paths, or working-directory paths.
 
+On Windows, session records use `%LOCALAPPDATA%\CodexPet\sessions`. The same bridge discovers Windows `COM` ports instead of macOS `/dev/cu.*` devices.
+
 ## 1. Install Python dependency
 
 ```bash
@@ -63,7 +67,7 @@ Run the persistent bridge manually:
 .venv/bin/python codex_pet_daemon.py --port auto
 ```
 
-If more than one plausible board is attached, identify the Uno with `arduino-cli board list`, then pass its exact `/dev/cu.*` path using `--port`.
+If more than one plausible board is attached, identify the Uno with `arduino-cli board list`, then pass its exact `/dev/cu.*` path or Windows `COM` name using `--port`.
 The daemon re-sends the selected state every five seconds by default so an Arduino reset cannot silently desynchronize the display. Use `--heartbeat SECONDS` to choose another positive interval.
 
 ## 3. Configure Codex hooks

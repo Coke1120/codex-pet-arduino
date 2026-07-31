@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persistent Codex lifecycle state aggregator and Arduino Serial bridge."""
+"""Persistent cross-platform Codex lifecycle and Arduino Serial bridge."""
 
 import argparse
 import json
@@ -36,12 +36,22 @@ def default_state_dir() -> Path:
     override = os.environ.get("CODEX_PET_STATE_DIR")
     if override:
         return Path(override).expanduser()
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data) / "CodexPet" / "sessions"
+        return Path.home() / "AppData" / "Local" / "CodexPet" / "sessions"
     return Path.home() / "Library" / "Application Support" / "CodexPet" / "sessions"
 
 
 def detected_ports() -> List[ListPortInfo]:
+    def supported(device: str) -> bool:
+        if sys.platform == "win32":
+            return device.upper().startswith("COM")
+        return device.startswith("/dev/cu.")
+
     return sorted(
-        (p for p in list_ports.comports() if p.device.startswith("/dev/cu.")),
+        (p for p in list_ports.comports() if supported(p.device)),
         key=lambda p: p.device,
     )
 
@@ -58,11 +68,15 @@ def arduino_score(port: ListPortInfo) -> int:
         score += 50
     if port.device.startswith("/dev/cu.usbmodem"):
         score += 10
+    if port.device.upper().startswith("COM") and port.vid is not None:
+        score += 10
     return score
 
 
 def choose_port(requested: str) -> Optional[str]:
     if requested != "auto":
+        if sys.platform == "win32":
+            return requested if requested.upper().startswith("COM") else None
         return requested if Path(requested).exists() else None
     candidates = [p for p in detected_ports() if arduino_score(p) > 0]
     if not candidates:

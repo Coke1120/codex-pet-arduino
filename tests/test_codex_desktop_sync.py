@@ -43,6 +43,13 @@ def write_record(path: Path, state: str, updated_at: float) -> None:
 
 
 class HookTests(unittest.TestCase):
+    def test_default_state_dir_is_platform_appropriate(self) -> None:
+        with patch.dict(hook.os.environ, {"LOCALAPPDATA": r"C:\Users\Example\AppData\Local"}, clear=True), patch.object(hook.sys, "platform", "win32"):
+            self.assertEqual(
+                hook.default_state_dir(),
+                Path(r"C:\Users\Example\AppData\Local") / "CodexPet" / "sessions",
+            )
+
     def test_event_mapping(self) -> None:
         cases = {
             "SessionStart": "idle",
@@ -190,6 +197,12 @@ class ManualBridgeTests(unittest.TestCase):
         with patch.object(bridge, "detected_ports", return_value=[adapter, uno]):
             self.assertEqual(bridge.choose_port("auto"), uno.device)
 
+    def test_windows_com_ports_are_discovered(self) -> None:
+        com = fake_port("COM4", "Arduino UNO")
+        unix = fake_port("/dev/cu.usbmodem1", "Arduino UNO")
+        with patch.object(bridge.list_ports, "comports", return_value=[com, unix]), patch.object(bridge.sys, "platform", "win32"):
+            self.assertEqual([port.device for port in bridge.detected_ports()], ["COM4"])
+
     def test_stdin_states_ignores_blank_lines(self) -> None:
         with patch.object(bridge.sys, "stdin", io.StringIO("\nrunning\n  \nidle\n")):
             self.assertEqual(list(bridge.stdin_states()), ["running\n", "idle\n"])
@@ -306,6 +319,10 @@ class FakeBoard:
 
 
 class DaemonPortTests(unittest.TestCase):
+    def test_explicit_windows_port_does_not_require_a_filesystem_node(self) -> None:
+        with patch.object(daemon.sys, "platform", "win32"):
+            self.assertEqual(daemon.choose_port("COM7"), "COM7")
+
     def test_auto_port_requires_one_unambiguous_arduino(self) -> None:
         first = fake_port("/dev/cu.usbmodem1", "Arduino UNO")
         second = fake_port("/dev/cu.usbmodem2", "Arduino UNO")

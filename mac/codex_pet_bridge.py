@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mac Serial bridge for the Arduino Codex Pet.
+"""Cross-platform Serial bridge for the Arduino Codex Pet.
 
 Examples:
   python3 codex_pet_bridge.py --list
@@ -39,9 +39,14 @@ def port_description(port: ListPortInfo) -> str:
 
 
 def detected_ports() -> List[ListPortInfo]:
-    """Return pyserial port records for outbound macOS /dev/cu.* devices."""
+    """Return pyserial port records for outbound macOS or Windows devices."""
+    def supported(device: str) -> bool:
+        if sys.platform == "win32":
+            return device.upper().startswith("COM")
+        return device.startswith("/dev/cu.")
+
     return sorted(
-        (p for p in list_ports.comports() if p.device.startswith("/dev/cu.")),
+        (p for p in list_ports.comports() if supported(p.device)),
         key=lambda p: p.device,
     )
 
@@ -58,6 +63,8 @@ def arduino_score(port: ListPortInfo) -> int:
     if "uno" in text:
         score += 50
     if port.device.startswith("/dev/cu.usbmodem"):
+        score += 10
+    if port.device.upper().startswith("COM") and port.vid is not None:
         score += 10
     return score
 

@@ -10,7 +10,7 @@ A tiny physical coding companion for an **Arduino Uno R3** and a **1.8-inch ST77
 
 The current reference build can use the locally selected **Sakamata Chloe** Codex pet through a gitignored generated header. Its source atlas is converted offline into eight large, 8-colour RLE-compressed frames so the animation fits the ATmega328P's 32 KB flash without a framebuffer. The public default remains an original MIT-licensed demo mascot.
 
-> Search keywords: Arduino desktop pet, Codex Pet, physical AI coding assistant, ST7735 animation, TFT_eSPI Arduino Uno, serial status display, pixel art robot pet, macOS Arduino bridge.
+> Search keywords: Arduino desktop pet, Codex Pet, physical AI coding assistant, ST7735 animation, TFT_eSPI Arduino Uno, serial status display, pixel art robot pet, macOS and Windows Arduino bridge.
 
 ## Features
 
@@ -22,6 +22,7 @@ The current reference build can use the locally selected **Sakamata Chloe** Code
 - Compact current-state indicator
 - Manual, one-shot, interactive, and stdin-streaming bridge modes
 - Direct Codex Desktop/CLI lifecycle sync through official Codex hooks
+- Cross-platform host support for macOS `/dev/cu.*` and Windows `COM` ports
 - Conservative Arduino-aware serial-port discovery that avoids generic USB adapters
 - Verified Serial acknowledgements plus periodic state resynchronization after board resets
 - Low-memory design without a full-screen framebuffer
@@ -86,12 +87,14 @@ arduino/CodexPet/pet_demo_rle.h        Original MIT-licensed fallback mascot
 arduino/CodexPet/pet_generated.h      Optional local generated pet (gitignored)
 config/User_Setup.h                     TFT_eSPI display and pin configuration
 tools/convert_codex_pet.py              Codex atlas → Uno RLE header converter
-mac/codex_pet_bridge.py        macOS USB Serial bridge
+mac/codex_pet_bridge.py        Cross-platform USB Serial bridge
 mac/codex_pet_hook.py          Codex lifecycle hook event mapper
 mac/codex_pet_daemon.py        Persistent event aggregator and Serial bridge
 mac/requirements.txt           Python dependency
+windows/install.ps1            Windows runtime/hooks/startup-task installer
 docs/HARDWARE.md               Safe wiring, BOM, perfboard, and enclosure guide
 docs/CODEX_DESKTOP.md          Direct Codex Desktop/CLI synchronization guide
+docs/WINDOWS.md                Windows installation and verification guide
 ```
 
 ## Quick start
@@ -123,9 +126,9 @@ Build and host integration:
 - Install TFT_eSPI 2.5.43 and apply `config/User_Setup.h`.
 - Compile the public fallback once without `pet_generated.h`, then compile the local custom build with it present. Report flash and SRAM for both.
 - Upload the local custom build.
-- Create/use the Python venv under `mac/.venv`, install `mac/requirements.txt`, and run all tests plus syntax checks.
+- On macOS, create/use the Python venv under `mac/.venv`; on Windows, use `windows/install.ps1`. Install `mac/requirements.txt`, then run all tests plus syntax checks.
 - Configure or merge Codex hooks from `examples/codex-hooks.json`; do not overwrite unrelated hooks.
-- Install the daemon runtime under `~/Library/Application Support/CodexPet/runtime` and a user LaunchAgent following `docs/CODEX_DESKTOP.md`.
+- Install the host runtime: macOS uses `~/Library/Application Support/CodexPet/runtime` plus a LaunchAgent; Windows uses `%LOCALAPPDATA%\CodexPet\runtime` plus a Scheduled Task. Follow `docs/CODEX_DESKTOP.md` and `docs/WINDOWS.md`.
 
 Verification:
 - Use one persistent Serial session at 115200 baud.
@@ -201,7 +204,9 @@ The firmware automatically uses `pet_generated.h` when present; otherwise it bui
 5. Open Serial Monitor at **115200 baud** with newline enabled.
 6. Send `idle`, `running`, `waiting`, or `review`.
 
-### 4. Install the Mac bridge
+### 4. Install the host bridge
+
+#### macOS
 
 ```bash
 cd mac
@@ -236,6 +241,17 @@ printf 'running\nwaiting\nreview\nidle\n' | \
 ```
 
 Opening an Uno serial port usually resets the board. The bridge therefore waits for startup and requires a `pong` handshake before sending states.
+
+#### Windows
+
+The same Python bridge and daemon support Windows `COM` ports. Run the PowerShell installer once:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\windows\install.ps1
+```
+
+It installs an isolated runtime under `%LOCALAPPDATA%\CodexPet`, safely merges Codex hooks, and creates a per-user startup task. See [`docs/WINDOWS.md`](docs/WINDOWS.md) for requirements, verification, explicit `COM` selection, and removal.
 
 ## Connecting a coding workflow
 
@@ -303,7 +319,7 @@ This is enough for a large two-frame loop in each of the four states, but not fo
 - Add a buzzer, buttons, rotary encoder, or ambient-light sensor
 - Control the backlight through a suitable transistor or MOSFET
 - Extend the protocol with sequence IDs and an explicit firmware-side timeout fallback
-- Build Linux and Windows serial bridge adapters
+- Add a Linux service installer for the existing portable Python bridge
 
 ## Compatibility notes
 
