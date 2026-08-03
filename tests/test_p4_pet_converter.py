@@ -81,6 +81,57 @@ class P4PetConverterTests(unittest.TestCase):
             ),
         )
 
+    def test_lifecycle_animation_preserves_v1_per_frame_cadence(self):
+        source = (ROOT / "esp32-p4" / "main" / "codex_pet_main.c").read_text(
+            encoding="utf-8"
+        )
+        defines = {
+            name: int(value)
+            for name, value in re.findall(
+                r"^#define (PET_(?:IDLE|RUNNING|WAITING|REVIEW)_FRAME_MS) (\d+)U$",
+                source,
+                re.M,
+            )
+        }
+        self.assertEqual(
+            defines,
+            {
+                "PET_IDLE_FRAME_MS": 650,
+                "PET_RUNNING_FRAME_MS": 280,
+                "PET_WAITING_FRAME_MS": 520,
+                "PET_REVIEW_FRAME_MS": 420,
+            },
+        )
+
+        expected_arrays = {
+            "idle_durations": ("PET_IDLE_FRAME_MS",) * 6,
+            "run_durations": ("PET_RUNNING_FRAME_MS",) * 8,
+            "waiting_durations": ("PET_WAITING_FRAME_MS",) * 6,
+            "running_durations": ("PET_RUNNING_FRAME_MS",) * 6,
+            "review_durations": ("PET_REVIEW_FRAME_MS",) * 6,
+        }
+        for array_name, expected in expected_arrays.items():
+            with self.subTest(array_name=array_name):
+                match = re.search(
+                    rf"static const uint16_t {array_name}\[\] = \{{([^}}]+)\}};",
+                    source,
+                    re.S,
+                )
+                self.assertIsNotNone(match)
+                values = tuple(
+                    value.strip() for value in match.group(1).split(",") if value.strip()
+                )
+                self.assertEqual(values, expected)
+
+        blink = re.search(
+            r"static const uint16_t blink_durations\[\] = \{([^}]+)\};", source
+        )
+        self.assertIsNotNone(blink)
+        self.assertEqual(
+            tuple(int(value.strip()) for value in blink.group(1).split(",")),
+            (280, 110, 110, 140, 140, 320),
+        )
+
     def test_look_direction_order_is_clockwise(self):
         self.assertEqual(
             converter.LOOK_DIRECTIONS,

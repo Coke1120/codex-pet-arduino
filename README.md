@@ -139,6 +139,7 @@ tools/convert_codex_pet.py              Codex atlas → Uno RLE header converter
 mac/codex_pet_bridge.py                 Cross-platform USB Serial bridge
 mac/codex_pet_hook.py                   Codex lifecycle hook event mapper
 mac/codex_pet_daemon.py                 Persistent event aggregator and Serial bridge
+mac/install.sh                          macOS runtime/LaunchAgent installer and updater
 mac/requirements.txt                    Python dependency
 windows/install.ps1                     Windows runtime/hooks/startup-task installer
 docs/HARDWARE.md                        Uno wiring, BOM, perfboard, and enclosure guide
@@ -178,7 +179,7 @@ Build and host integration:
 - Upload the local custom build.
 - On macOS, create/use the Python venv under `mac/.venv`; on Windows, use `windows/install.ps1`. Install `mac/requirements.txt`, then run all tests plus syntax checks.
 - Configure or merge Codex hooks from `examples/codex-hooks.json`; do not overwrite unrelated hooks.
-- Install the host runtime: macOS uses `~/Library/Application Support/CodexPet/runtime` plus a LaunchAgent; Windows uses `%LOCALAPPDATA%\CodexPet\runtime` plus a Scheduled Task. Follow `docs/CODEX_DESKTOP.md` and `docs/WINDOWS.md`.
+- Install the host runtime: macOS uses `bash mac/install.sh` to update `~/Library/Application Support/CodexPet/runtime` plus its LaunchAgent; Windows uses `%LOCALAPPDATA%\CodexPet\runtime` plus a Scheduled Task. Follow `docs/CODEX_DESKTOP.md` and `docs/WINDOWS.md`.
 
 Verification:
 - Use one persistent Serial session at 115200 baud.

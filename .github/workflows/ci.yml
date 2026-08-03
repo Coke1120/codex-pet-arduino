@@ -68,9 +68,11 @@ jobs:
         run: idf.py build
       - name: Verify protocol parser and firmware size margin
         run: |
-          cc -std=c11 -Wall -Wextra -Werror tests/test_pet_protocol.c esp32-p4/main/pet_protocol.c -Iesp32-p4/main -o /tmp/pet_protocol_test
+          # ESP-IDF prepends RISC-V binutils; keep host tests on the native
+          # assembler, then return to the IDF PATH for target symbol checks.
+          env PATH=/usr/bin:/bin /usr/bin/cc -std=c11 -Wall -Wextra -Werror tests/test_pet_protocol.c esp32-p4/main/pet_protocol.c -Iesp32-p4/main -o /tmp/pet_protocol_test
           /tmp/pet_protocol_test
-          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=undefined tests/test_pet_interaction.c esp32-p4/main/pet_interaction.c -Iesp32-p4/main -o /tmp/pet_interaction_test
+          env PATH=/usr/bin:/bin /usr/bin/cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=undefined tests/test_pet_interaction.c esp32-p4/main/pet_interaction.c -Iesp32-p4/main -o /tmp/pet_interaction_test
           /tmp/pet_interaction_test
           riscv32-esp-elf-nm -S --size-sort esp32-p4/build/codex_pet_jc4880p443c.elf | grep -Eq '^[[:xdigit:]]+ 00679e60 [rR] pet_size_fixture_payload$'
           riscv32-esp-elf-nm -S --size-sort esp32-p4/build/codex_pet_jc4880p443c.elf | grep -Eq '^[[:xdigit:]]+ 000007fc [rR] pet_size_fixture_images$'

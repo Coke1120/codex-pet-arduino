@@ -82,14 +82,41 @@ typedef struct {
     bool interruptible;
 } pet_action_manifest_t;
 
-static const uint16_t idle_durations[] = {280, 110, 110, 140, 140, 320};
-static const uint16_t run_durations[] = {120, 120, 120, 120, 120, 120, 120, 220};
+#define PET_IDLE_FRAME_MS 650U
+#define PET_RUNNING_FRAME_MS 280U
+#define PET_WAITING_FRAME_MS 520U
+#define PET_REVIEW_FRAME_MS 420U
+
+/*
+ * V2 has three times as many lifecycle frames as v1. Preserve the familiar
+ * per-frame cadence instead of compressing every row into the old loop time,
+ * which made the character appear to run at two to three times normal speed.
+ */
+static const uint16_t idle_durations[] = {
+    PET_IDLE_FRAME_MS, PET_IDLE_FRAME_MS, PET_IDLE_FRAME_MS,
+    PET_IDLE_FRAME_MS, PET_IDLE_FRAME_MS, PET_IDLE_FRAME_MS,
+};
+static const uint16_t blink_durations[] = {280, 110, 110, 140, 140, 320};
+static const uint16_t run_durations[] = {
+    PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS,
+    PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS,
+    PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS,
+};
 static const uint16_t wave_durations[] = {140, 140, 140, 280};
 static const uint16_t jump_durations[] = {140, 140, 140, 140, 280};
 static const uint16_t failed_durations[] = {140, 140, 140, 140, 140, 140, 140, 240};
-static const uint16_t waiting_durations[] = {150, 150, 150, 150, 150, 260};
-static const uint16_t running_durations[] = {120, 120, 120, 120, 120, 220};
-static const uint16_t review_durations[] = {150, 150, 150, 150, 150, 280};
+static const uint16_t waiting_durations[] = {
+    PET_WAITING_FRAME_MS, PET_WAITING_FRAME_MS, PET_WAITING_FRAME_MS,
+    PET_WAITING_FRAME_MS, PET_WAITING_FRAME_MS, PET_WAITING_FRAME_MS,
+};
+static const uint16_t running_durations[] = {
+    PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS,
+    PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS,
+};
+static const uint16_t review_durations[] = {
+    PET_REVIEW_FRAME_MS, PET_REVIEW_FRAME_MS, PET_REVIEW_FRAME_MS,
+    PET_REVIEW_FRAME_MS, PET_REVIEW_FRAME_MS, PET_REVIEW_FRAME_MS,
+};
 static const uint16_t look_hold_durations[] = {850};
 static const uint16_t look_turn_durations[] = {100, 100, 100, 100, 100, 100, 100, 100, 220};
 static const uint16_t excited_durations[] = {95, 95, 95, 95, 180};
@@ -97,6 +124,7 @@ static const uint16_t sleepy_durations[] = {240, 260, 300, 420, 700};
 
 #define ARRAY_COUNT(values) (sizeof(values) / sizeof((values)[0]))
 _Static_assert(ARRAY_COUNT(idle_durations) == PET_FRAME_IDLE_COUNT, "idle duration contract");
+_Static_assert(ARRAY_COUNT(blink_durations) == PET_FRAME_IDLE_COUNT, "blink duration contract");
 _Static_assert(ARRAY_COUNT(run_durations) == PET_FRAME_RUNNING_RIGHT_COUNT, "directional run contract");
 _Static_assert(ARRAY_COUNT(wave_durations) == PET_FRAME_WAVING_COUNT, "wave duration contract");
 _Static_assert(ARRAY_COUNT(jump_durations) == PET_FRAME_JUMPING_COUNT, "jump duration contract");
@@ -115,7 +143,7 @@ _Static_assert(PET_FRAME_LOOK_FIRST + PET_FRAME_LOOK_COUNT == PET_FRAME_COUNT,
 static const pet_action_manifest_t action_manifest[ACTION_COUNT] = {
     [ACTION_IDLE] = {"idle", PET_FRAME_IDLE_FIRST, PET_FRAME_IDLE_COUNT, idle_durations,
                      PRIORITY_IDLE, ACTION_CONTEXT, true, true},
-    [ACTION_BLINK] = {"blink", PET_FRAME_IDLE_FIRST, PET_FRAME_IDLE_COUNT, idle_durations,
+    [ACTION_BLINK] = {"blink", PET_FRAME_IDLE_FIRST, PET_FRAME_IDLE_COUNT, blink_durations,
                       PRIORITY_IDLE, ACTION_CONTEXT, false, true},
     [ACTION_LOOK_UP] = {"look_up", PET_FRAME_LOOK_FIRST, 1, look_hold_durations,
                         PRIORITY_WEATHER, ACTION_CONTEXT, false, true},

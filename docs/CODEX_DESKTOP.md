@@ -31,6 +31,12 @@ Arduino Codex Pet
 
 When multiple Codex conversations are active, priority is `waiting` → `review` → `running` → `idle`. Session records expire after 15 minutes by default so a crashed Codex process cannot leave the pet permanently busy.
 
+`RUNNING` or `REVIEW` is expected while Codex is processing the current turn;
+the same session writes `idle` when its `Stop` hook fires. A manual status-card
+tap is only a hardware test and will be replaced by the daemon's next five-second
+heartbeat. If a process exits without `Stop`, its last busy state can remain
+visible until the 15-minute active TTL expires.
+
 The hook stores only a hashed session key, mapped state, event name, and timestamp under:
 
 ```text
@@ -74,37 +80,45 @@ The daemon re-sends the selected state every five seconds by default so a board 
 
 Codex loads user hooks from `~/.codex/hooks.json`. Start from [`examples/codex-hooks.json`](../examples/codex-hooks.json), replace every `/ABSOLUTE/PATH/TO/codex-pet-arduino` with the real repository path, and merge its event groups into any existing `~/.codex/hooks.json` rather than overwriting unrelated hooks.
 
+After installing the macOS runtime in step 4, the hook commands may instead
+point to `~/Library/Application Support/CodexPet/runtime/codex_pet_hook.py`;
+rerunning the installer keeps that copy current without granting a LaunchAgent
+access to the repository under `Documents`.
+
 Restart Codex Desktop after changing hooks. Codex requires non-managed command hooks to be reviewed and trusted before they run. Open `/hooks` in Codex, inspect the exact commands, and trust them only if the paths point to this local repository.
 
 The hook always exits successfully and never makes allow/deny decisions, so a display or Serial failure cannot block a Codex turn.
 
-## 4. Start automatically with launchd
+## 4. Install or update the launchd runtime
 
-macOS may deny background LaunchAgents access to source code kept under `Documents`. For a reliable service, install a small runtime copy under `~/Library/Application Support/CodexPet/runtime`, then copy [`examples/org.example.codex-pet.plist`](../examples/org.example.codex-pet.plist), replace its runtime paths, and install it as a per-user LaunchAgent:
+macOS may deny background LaunchAgents access to source code kept under
+`Documents`. The installer maintains a small runtime copy under
+`~/Library/Application Support/CodexPet/runtime`, installs its isolated Python
+environment, and loads `com.coke1120.codex-pet` as a per-user LaunchAgent:
 
 ```bash
 cd /path/to/codex-pet-arduino
-RUNTIME="$HOME/Library/Application Support/CodexPet/runtime"
-mkdir -p "$RUNTIME"
-python3 -m venv "$RUNTIME"
-"$RUNTIME/bin/python" -m pip install -r mac/requirements.txt
-cp mac/codex_pet_daemon.py "$RUNTIME/codex_pet_daemon.py"
-
-install -d -m 700 "$HOME/Library/Logs/CodexPet"
-cp examples/org.example.codex-pet.plist ~/Library/LaunchAgents/org.example.codex-pet.plist
-sed -i '' "s|/Users/YOU|$HOME|g" ~/Library/LaunchAgents/org.example.codex-pet.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.example.codex-pet.plist
-launchctl kickstart -k gui/$(id -u)/org.example.codex-pet
+bash mac/install.sh
 ```
+
+Rerun the same command after pulling a new repository version. It atomically
+updates the copied daemon, hook, requirements, and plist before restarting the
+single service. When `--port` is omitted, an existing explicit port is
+preserved; pass `--port /dev/cu.usbmodem...` when more than one plausible board
+is attached, or `--port auto` to reset an explicit selection. The installer also
+migrates the former `org.example.codex-pet` LaunchAgent so only one daemon can
+own the Serial port. The daemon connection log identifies `clock, weather` after
+a successful P4 capability handshake, or `lifecycle-only` for a legacy board.
 
 To remove it:
 
 ```bash
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/org.example.codex-pet.plist
-rm ~/Library/LaunchAgents/org.example.codex-pet.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.coke1120.codex-pet.plist
+rm ~/Library/LaunchAgents/com.coke1120.codex-pet.plist
 ```
 
-Logs are written to the user-owned `~/Library/Logs/CodexPet` directory by the example plist.
+Logs are written beside the runtime under
+`~/Library/Application Support/CodexPet/daemon.out.log` and `daemon.err.log`.
 
 ## Verification
 

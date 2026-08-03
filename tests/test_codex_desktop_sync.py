@@ -743,6 +743,48 @@ class WeatherSyncTests(unittest.TestCase):
         worker_class.assert_not_called()
         link.close.assert_called_once_with()
 
+    def test_once_with_v2_link_sends_lifecycle_clock_and_weather(self) -> None:
+        snapshot = daemon.WeatherSnapshot(29.5, 27.0, 32.0, 82, "rain", 200)
+        link = unittest.mock.Mock()
+        link.capabilities = {"weather", "clock"}
+        worker = unittest.mock.Mock()
+        worker.snapshot.return_value = snapshot
+        worker.last_error.return_value = None
+
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            daemon.sys,
+            "argv",
+            [
+                "codex_pet_daemon.py",
+                "--state-dir",
+                temporary,
+                "--port",
+                "/dev/cu.test",
+                "--once",
+            ],
+        ), patch.object(daemon, "choose_port", return_value="/dev/cu.test"), patch.object(
+            daemon, "ArduinoLink", return_value=link
+        ), patch.object(
+            daemon, "WeatherWorker", return_value=worker
+        ), patch.object(
+            daemon.signal, "signal"
+        ), patch.object(
+            daemon.time, "time", return_value=1_722_730_800
+        ), patch.object(
+            daemon, "local_utc_offset_seconds", return_value=28_800
+        ), redirect_stdout(io.StringIO()) as stdout, redirect_stderr(io.StringIO()):
+            self.assertEqual(daemon.main(), 0)
+
+        link.send_state.assert_called_once_with("idle")
+        link.send_clock.assert_called_once_with(1_722_730_800, 28_800)
+        link.send_weather.assert_called_once_with(snapshot)
+        worker.start.assert_called_once_with()
+        worker.stop.assert_called_once_with()
+        self.assertIn(
+            "Connected to /dev/cu.test [clock, weather]", stdout.getvalue()
+        )
+        link.close.assert_called_once_with()
+
     def test_weather_worker_error_is_reported_by_daemon_loop(self) -> None:
         link = unittest.mock.Mock()
         link.capabilities = {"weather"}

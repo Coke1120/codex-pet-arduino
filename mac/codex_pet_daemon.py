@@ -592,7 +592,13 @@ def main() -> int:
                         )
                         weather_worker.start()
                         reported_weather_error = None
-                    print("Connected to {}".format(selected), flush=True)
+                    negotiated = ", ".join(sorted(link.capabilities))
+                    if not negotiated:
+                        negotiated = "lifecycle-only"
+                    print(
+                        "Connected to {} [{}]".format(selected, negotiated),
+                        flush=True,
+                    )
                 except (OSError, serial.SerialException) as exc:
                     print("Codex Pet connection warning: {}".format(exc), file=sys.stderr)
                     link = None
