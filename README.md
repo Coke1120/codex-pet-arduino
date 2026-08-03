@@ -4,7 +4,7 @@
 [![Arduino Uno](https://img.shields.io/badge/board-Arduino%20Uno-00979D?logo=arduino&logoColor=white)](https://docs.arduino.cc/hardware/uno-rev3/)
 [![Display](https://img.shields.io/badge/display-ST7735%20128%C3%97160-5C2D91)](https://github.com/Bodmer/TFT_eSPI)
 [![Python](https://img.shields.io/badge/bridge-Python%203-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![CI](https://github.com/Coke1120/codex-pet-dev-Board/actions/workflows/ci.yml/badge.svg)](https://github.com/Coke1120/codex-pet-dev-Board/actions/workflows/ci.yml)
+[![CI](https://github.com/Coke1120/codex-pet-dev-board/actions/workflows/ci.yml/badge.svg)](https://github.com/Coke1120/codex-pet-dev-board/actions/workflows/ci.yml)
 
 Two firmware targets share the same Codex Desktop/CLI hooks and USB Serial
 protocol:
@@ -15,14 +15,14 @@ protocol:
   ESP-IDF/LVGL build for the ESP32-P4, with the onboard ESP32-C6 available for
   future wireless features.
 
-Both firmware implementations provide animated `idle`, `running`, `waiting`,
-and `review` modes. The Uno build can mirror the selected custom Codex pet
-through a gitignored generated header; the initial ESP32-P4 implementation
-provides the same selected-pet animation model and host protocol. Its private
-high-resolution asset is generated locally and kept gitignored. The P4 target
-has been clean-built and flashed on the target board; visual confirmation of
-the new selected-pet frames, Serial acknowledgements, and exhaustive touch/state
-acceptance remain pending. See [`docs/ESP32_P4.md`](docs/ESP32_P4.md).
+Both firmware implementations understand the animated `idle`, `running`,
+`waiting`, and `review` state model. The Uno build can mirror the selected custom
+Codex pet through a gitignored generated header. The P4 public build uses a small
+red test tile so CI and new users can compile without private artwork; generating
+the gitignored high-resolution local asset activates the selected-pet animation.
+The P4 target has been clean-built and flashed on the target board; visual
+confirmation of the new selected-pet frames, Serial acknowledgements, and
+exhaustive touch/state acceptance remain pending. See [`docs/ESP32_P4.md`](docs/ESP32_P4.md).
 
 > Search keywords: Arduino desktop pet, Codex Pet, physical AI coding assistant, ST7735 animation, TFT_eSPI Arduino Uno, serial status display, pixel art robot pet, macOS and Windows Arduino bridge.
 
@@ -137,7 +137,7 @@ Paste the following prompt into Codex, Hermes, Claude Code, or another local AI 
 
 ```text
 Install or maintain the Codex Pet Arduino project from:
-https://github.com/Coke1120/codex-pet-dev-Board
+https://github.com/Coke1120/codex-pet-dev-board
 
 Work autonomously until the physical pet is working, but preserve unrelated local changes and do not publish private/custom character artwork.
 
@@ -167,7 +167,8 @@ Verification:
 - Require exact `pong` and `OK IDLE/RUNNING/WAITING/REVIEW` replies.
 - Visually verify a large moving pet, compact status bar, correct orientation/colours, no full-screen blink, and all four states.
 - Confirm the LaunchAgent is running and lifecycle events move running -> review/waiting -> idle.
-- Run: Python tests, Python syntax, both Uno compiles, converter reproducibility, `git diff --check`, and secret/absolute-path scans.
+- Run: Python tests, Python syntax, both Uno compiles, P4 converter unit tests,
+  `git diff --check`, and secret/absolute-path scans.
 - If asked to publish, review the final diff, keep custom artwork private, commit, push, and watch GitHub Actions to success.
 ```
 
@@ -386,7 +387,9 @@ If this project is useful, you can [sponsor its maintenance on GitHub](https://g
 
 ## License
 
-Released under the [MIT License](LICENSE).
+Released under the [MIT License](LICENSE). Optional dependencies and their
+redistribution boundaries are documented in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Acknowledgements and trademark notice
 

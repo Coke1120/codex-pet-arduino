@@ -33,11 +33,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: arduino/setup-arduino-cli@v2
+      - uses: arduino/setup-arduino-cli@81d310742121c928ea9c8bbd407b4217b432ae02 # v2
         with:
-          version: "1.x"
+          version: "1.5.1"
       - run: arduino-cli core update-index
-      - run: arduino-cli core install arduino:avr
+      - run: arduino-cli core install arduino:avr@1.8.8
       - run: arduino-cli lib install "TFT_eSPI@2.5.43"
       - run: cp config/User_Setup.h "$HOME/Arduino/libraries/TFT_eSPI/User_Setup.h"
       - run: arduino-cli compile --fqbn arduino:avr:uno --warnings all arduino/CodexPet
@@ -55,5 +55,8 @@ jobs:
           grep -q '^CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y$' sdkconfig
           grep -q '^CONFIG_SPIRAM_MODE_HEX=y$' sdkconfig
           grep -q '^CONFIG_SPIRAM_SPEED_80M=y$' sdkconfig
+          grep -q '^CONFIG_LV_DRAW_SW_SUPPORT_RGB565A8=y$' sdkconfig
+          grep -q '^CONFIG_PARTITION_TABLE_CUSTOM=y$' sdkconfig
+          test "$(git -C .. status --porcelain -- esp32-p4/dependencies.lock)" = ""
       - working-directory: esp32-p4
         run: idf.py build

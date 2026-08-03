@@ -37,9 +37,9 @@ a generic ESP32-P4 board configuration.
 
 ## Generate the selected Codex pet locally
 
-The public build uses a one-pixel placeholder asset. To mirror the pet selected
-in Codex Desktop, generate a private RGB565A8 asset translation unit before
-building:
+The public build uses a small red test tile instead of redistributable character
+art. To mirror the pet selected in Codex Desktop, generate a private RGB565A8
+asset translation unit before building:
 
 ```bash
 python3 tools/convert_codex_pet_p4.py \
@@ -64,7 +64,11 @@ idf.py set-target esp32p4
 idf.py build
 ```
 
-The first build downloads the pinned BSP and its managed dependencies.
+The first build downloads the pinned BSP and its managed dependencies. Review
+[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) before redistributing a
+firmware binary: the pinned community BSP snapshot does not include an explicit
+license file, so this repository publishes source/build instructions rather than
+prebuilt binaries containing that component.
 
 ## Identify the correct port
 
