@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-platform Serial bridge for the Arduino Codex Pet.
+"""Cross-platform Serial bridge for Codex Pet boards.
 
 Examples:
   python3 codex_pet_bridge.py --list
@@ -51,8 +51,8 @@ def detected_ports() -> List[ListPortInfo]:
     )
 
 
-def arduino_score(port: ListPortInfo) -> int:
-    """Rank ports conservatively; a generic USB-serial adapter is not an Uno."""
+def board_score(port: ListPortInfo) -> int:
+    """Rank ports for supported Codex Pet boards without guessing adapters."""
     text = " ".join(
         str(value or "")
         for value in (port.description, port.manufacturer, port.product, port.interface)
@@ -62,6 +62,8 @@ def arduino_score(port: ListPortInfo) -> int:
         score += 100
     if "uno" in text:
         score += 50
+    if "esp32-p4" in text or "esp32p4" in text or "jc4880p443c" in text:
+        score += 150
     if port.device.startswith("/dev/cu.usbmodem"):
         score += 10
     if port.device.upper().startswith("COM") and port.vid is not None:
@@ -69,26 +71,30 @@ def arduino_score(port: ListPortInfo) -> int:
     return score
 
 
+# Kept as an API alias for existing wrappers and tests.
+def arduino_score(port: ListPortInfo) -> int:
+    return board_score(port)
+
+
 def choose_port(requested: str) -> str:
     if requested != "auto":
         return requested
 
     ports = detected_ports()
-    plausible = [p for p in ports if arduino_score(p) > 0]
+    plausible = [p for p in ports if board_score(p) > 0]
     if not plausible:
         raise SystemExit(
-            "No identifiable Arduino serial port found. Reconnect the board, run "
-            "'arduino-cli board list', then choose the verified port with --port."
+            "No identifiable Codex Pet board serial port found. Reconnect the board, "
+            "inspect the port list, then choose the verified port with --port."
         )
-    best_score = max(arduino_score(p) for p in plausible)
-    candidates = [p for p in plausible if arduino_score(p) == best_score]
-    if len(candidates) != 1:
-        joined = "\n  ".join(port_description(p) for p in candidates)
+    if len(plausible) != 1:
+        joined = "\n  ".join(port_description(p) for p in plausible)
         raise SystemExit(
-            "More than one plausible Arduino was found; verify one with "
-            "'arduino-cli board list' and choose it with --port:\n  " + joined
+            "More than one supported Codex Pet board was found; auto mode will "
+            "not guess. Verify the intended device and choose it with --port:\n  "
+            + joined
         )
-    return candidates[0].device
+    return plausible[0].device
 
 
 def normalise_state(raw: str) -> str:
@@ -114,7 +120,7 @@ def exchange(
             if not reply:
                 continue
             received.append(reply)
-            print("Arduino:", reply)
+            print("Board:", reply)
             if reply == expected:
                 return reply
         else:
@@ -137,7 +143,7 @@ def stdin_states() -> Iterable[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Send Codex Pet states to Arduino.")
+    parser = argparse.ArgumentParser(description="Send Codex Pet states to the board.")
     parser.add_argument("--port", default="auto", help="serial port or 'auto'")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--list", action="store_true", help="list serial ports and exit")

@@ -1,6 +1,10 @@
 # Hardware, safe wiring, and enclosure
 
-This guide covers the hardware variant used during project bring-up:
+This guide covers only the original Arduino Uno reference hardware. For the
+GUITION JC4880P443C-I-W ESP32-P4 target, do not use any wiring on this page;
+follow [`ESP32_P4.md`](ESP32_P4.md).
+
+This guide covers the hardware variant used during the Uno project bring-up:
 
 - Arduino Uno R3 / ATmega328P
 - 1.8-inch 128 × 160 SPI TFT

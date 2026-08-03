@@ -1,0 +1,5 @@
+dependencies:
+  idf: ">=5.5.1,<5.6.0"
+  csvke/esp32_p4_jc4880p433c_bsp:
+    git: https://github.com/csvke/esp32_p4_jc4880p433c_bsp.git
+    version: 932af3aaee532af144087b6126aaa48eb9124be4
