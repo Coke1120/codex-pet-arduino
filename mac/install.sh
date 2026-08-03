@@ -97,6 +97,7 @@ atomic_copy() {
 
 atomic_copy "$repo_root/mac/codex_pet_daemon.py" "$runtime_dir/codex_pet_daemon.py"
 atomic_copy "$repo_root/mac/codex_pet_hook.py" "$runtime_dir/codex_pet_hook.py"
+atomic_copy "$repo_root/mac/codex_pet_usage.py" "$runtime_dir/codex_pet_usage.py"
 atomic_copy "$repo_root/mac/requirements.txt" "$runtime_dir/requirements.txt"
 
 if [[ $skip_dependencies -eq 0 ]]; then

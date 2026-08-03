@@ -10,10 +10,11 @@ JC4880P443C-I-W** variant with:
 - GT911 capacitive touch controller
 - internal camera
 
-The current Codex Pet firmware contains no application code that opens the
-camera, microphone, speaker, or ESP32-C6 networking. Camera inactivity still
-needs confirmation on the physical unit because display/touch and camera share
-board resources.
+The ESP32-P4 remains the application, display, and touch host. The firmware uses
+the onboard ESP32-C6 as a Wi-Fi and Bluetooth Low Energy co-processor through
+ESP-Hosted's four-bit SDIO transport. It does not initialize the camera,
+microphone, or speaker. Camera inactivity still needs confirmation on the
+physical unit because display/touch and camera share board resources.
 
 ## Software stack
 
@@ -23,6 +24,11 @@ board resources.
   (the upstream repository name says P433C, while its internal board symbols say
   P443C; this exact commit is the version flashed successfully on the target unit)
 - committed `dependencies.lock` for deterministic managed components
+- `esp_wifi_remote` 1.6.3 and ESP-Hosted 2.12.12 for the P4/C6 radio path
+- four-bit SDIO between the P4 host and C6 co-processor: P4 CLK GPIO18, CMD
+  GPIO19, D0–D3 GPIO14–17, and C6 reset GPIO54
+- NimBLE host on the P4 with the controller and HCI transport on the C6; this is
+  BLE only, not Classic Bluetooth
 - 16 MB flash and HEX PSRAM at 80 MHz, matching the verified build configuration
 - Native USB Serial/JTAG protocol transport; the host bridge keeps its 115200
   compatibility setting, although USB transport itself is not baud-clocked
@@ -69,7 +75,7 @@ The generated `pet_generated.c` contains all 73 used cells from the Codex Pet v2
 8×11 contract: nine standard animation rows plus 16 clockwise look directions.
 Frames remain at a 152×204 alpha-preserving source size and LVGL renders them at
 an exact integer 3× scale (456×612). Avoiding 73 pre-scaled bitmaps keeps the
-complete action set inside the 8,128 KiB application partition. The generated
+complete action set inside the configured application partition. The generated
 translation unit is intentionally gitignored; do not commit or publish it unless
 you own or have explicit permission to redistribute the artwork. Delete it to
 exercise the public fallback build.
@@ -97,6 +103,10 @@ firmware binary: the pinned community BSP snapshot does not include an explicit
 license file, so this repository publishes source/build instructions rather than
 prebuilt binaries containing that component.
 
+The P4 and C6 are separate flash targets. Build both images from the same
+resolved ESP-Hosted release. Mixing a newly downloaded slave with the committed
+host dependency can change the wire protocol and is unsupported.
+
 ## Identify the correct port
 
 The exact host port depends on which USB connector is attached. This firmware
@@ -110,8 +120,10 @@ and after reconnecting the intended connector:
 python3 mac/codex_pet_bridge.py --list
 ```
 
-Use the reconnect test and ESP32-P4 `chip_id` probe to verify the native P4 port,
-then pass it explicitly with `--port`.
+Use the reconnect test and `esptool.py --port <port> chip_id` to distinguish the
+ESP32-P4 protocol/flash port from the ESP32-C6 flash port. Confirm the reported
+chip before writing either image; do not infer the target from a changing
+`usbmodem` suffix.
 
 ## Flash and monitor
 
@@ -130,9 +142,31 @@ Expected boot lines include:
 ```text
 Codex Pet ESP32-P4 ready
 Board: JC4880P443C-I-W
-Protocol: v2 lifecycle clock weather today-v1
-Commands: idle running waiting review ping status capabilities clock weather
+Protocol: v2 lifecycle clock weather today-v1 usage-v1 wireless settings-v1
+Commands: idle running waiting review ping status capabilities clock weather usage
 ```
+
+## Build and flash the ESP32-C6 slave
+
+Run the P4 build first so ESP-IDF materializes the exact ESP-Hosted version from
+`dependencies.lock`. Then build the slave project inside that managed component:
+
+```bash
+cd esp32-p4/managed_components/espressif__esp_hosted/slave
+idf.py set-target esp32c6
+idf.py build
+idf.py -p /dev/cu.<verified-c6-port> flash monitor
+```
+
+This source tree is ESP-Hosted 2.12.12, the same release linked into the P4 host
+at the time of writing. Re-run the P4 build and check `dependencies.lock` before
+flashing if dependency resolution changes. The slave defaults select ESP32-C6,
+SDIO, Wi-Fi, and BLE HCI. Exit the monitor with `Ctrl+]`, reconnect the P4
+protocol port, and reset the board.
+
+The C6 flash connector and download-mode controls are board-specific. Verify the
+C6 with `chip_id` before `flash`; an image written to the wrong chip can prevent
+the display firmware or wireless co-processor from booting.
 
 ## Protocol verification
 
@@ -160,11 +194,13 @@ The P4 advertises optional extensions before the daemon uses them:
 
 ```text
 capabilities
-  -> CAPABILITIES 2 lifecycle clock weather today-v1
+  -> CAPABILITIES 2 lifecycle clock weather today-v1 usage usage-v1 wireless settings-v1
 clock <unix_epoch> <utc_offset_seconds>
   -> OK CLOCK
 weather <current_c> <low_c> <high_c> <rain_pct> <condition> <updated_epoch>
   -> OK WEATHER
+usage <latest_session_tokens> <today_tokens> <today_cached_input_tokens> <today_input_tokens> <updated_epoch>
+  -> OK USAGE
 ```
 
 Temperatures accept one decimal place. Conditions are `clear`,
@@ -172,7 +208,8 @@ Temperatures accept one decimal place. Conditions are `clear`,
 Unsupported or legacy boards explicitly reject the capability probe, and the
 daemon then sends lifecycle commands only. A probe timeout is treated as a
 retryable connection failure so a transient P4 response delay cannot silently
-disable Today Pet extensions.
+disable P4 extensions. `usage` contains non-negative token counters and a Unix
+update timestamp; it is not an account or subscription quota.
 
 The daemon obtains Hong Kong data from the no-key
 [Open-Meteo forecast API](https://open-meteo.com/en/docs), refreshes it every 15
@@ -184,13 +221,23 @@ weather retrieval. Weather data is attributed to Open-Meteo in the Today Panel.
 Fetch failures retain the last cached value and produce a deduplicated daemon
 warning; a successful refresh clears that warning state.
 
-## Touch interaction
+## Touch navigation
 
-- Drag down from the top 82 pixels to reveal the Today Panel; the card follows
-  the finger and snaps open or closed on release.
+- From Home, drag down from the top 82 pixels to reveal Today, swipe left to
+  open Settings, or swipe up to open Codex Usage. The surface follows the finger
+  and snaps open or closed on release.
 - While the panel opens, the Pet moves below it and shows only its upper body.
   When lifecycle priority allows, the v2 000° look frame makes it look upward.
-- Push the panel upward to return home.
+- Swipe up from Today, right from Settings, or down from Codex Usage to return
+  Home. Settings and Usage also provide a Back control.
+- Settings starts the non-blocking C6 backend and exposes Wi-Fi enable, scan,
+  network selection, password entry for secured networks, forget, and BLE
+  advertising as `Codex Pet`. Password text is cleared after submission and is
+  never included in the UI status snapshot or logs. ESP-IDF stores the selected
+  station configuration in flash until Forget clears it.
+- Codex Usage shows latest-session tokens, today's tokens, today's cached-input
+  ratio, and the last update time received from the desktop daemon. It marks
+  data aging after five minutes and stale after 30 minutes.
 - Tap the Pet for a random blink, wave, jump, look, turn, or excited reaction.
   A 2.5-second cooldown prevents repeated interruptions, and the Pet returns to
   the newest `idle`, `running`, `waiting`, or `review` state afterward.
@@ -209,12 +256,25 @@ After flashing, verify all of the following on the real board:
 5. Tapping the status card cycles `IDLE → RUNNING → WAITING → REVIEW`.
 6. A top-edge drag follows the finger, opens the Today Panel, moves the Pet to
    an upper-body composition, and an upward push restores the home view.
-7. `capabilities`, all four lifecycle commands, `clock`, and `weather` return the
-   exact acknowledgements above; a legacy board remains lifecycle-only.
-8. Time continues advancing between minute syncs; a failed weather request does
-   not block lifecycle or clock updates.
-9. The backlight and scaled animation remain stable during a continuous run.
-10. Confirm no camera indicator or stream activates; the application contains no
+7. A left swipe opens Settings; a right swipe or Back returns Home without
+   changing the current lifecycle animation.
+8. Enable Wi-Fi, scan, connect to an open or WPA/WPA2 network, and confirm the
+   Settings status and RSSI update. Use Forget and verify the saved network is
+   cleared. Do not publish the SSID or password in test logs.
+9. Enable BLE advertising, use a second device to discover `Codex Pet`, then
+   stop advertising and confirm it disappears. This is BLE discovery only;
+   Classic Bluetooth is not supported.
+10. An upward swipe opens Codex Usage and shows the values sent by the desktop
+    daemon. A downward swipe or Back returns Home. Leave the daemon stopped
+    long enough to observe aging at five minutes and stale at 30 minutes.
+11. `capabilities`, all four lifecycle commands, `clock`, `weather`, and `usage`
+    return the exact acknowledgements above; a legacy board remains
+    lifecycle-only.
+12. Time continues advancing between minute syncs; a failed weather or usage
+    refresh does not block lifecycle or clock updates.
+13. The backlight and scaled animation remain stable while Wi-Fi scans and BLE
+    advertises continuously.
+14. Confirm no camera indicator or stream activates; the application contains no
    camera initialization, but this remains a physical acceptance check.
 
 If the panel stays dark, stop and check that the exact PCB model is
@@ -225,7 +285,9 @@ similar P4 display.
 
 No separate host installation is required for the P4 target. The existing
 `mac/codex_pet_daemon.py`, lifecycle hooks, and Windows installer use the same
-newline-delimited lifecycle protocol and negotiate P4-only extensions. Generic CH340 ports intentionally remain excluded
+newline-delimited lifecycle protocol and negotiate P4-only extensions. The
+daemon supplies usage aggregates over USB; Wi-Fi is not required for lifecycle
+or usage sync. Generic CH340 ports intentionally remain excluded
 from automatic discovery because their metadata cannot prove which board is
 attached; configure the daemon with the verified explicit P4 port. If both Uno
 and P4 are connected, `auto` refuses to guess; run one daemon per board with an
@@ -234,10 +296,9 @@ explicit port if both should mirror the same lifecycle state.
 ## Verified boundary
 
 The board/display route was previously clean-built and flashed to an ESP32-P4
-revision v1.3 unit, and its written image hashes were verified. This Today Pet
-revision has also been clean-linked locally with a private 73-frame v2 asset:
-the application image is `0x720560` bytes and leaves `0xcfaa0` bytes (10%) in the
-`0x7f0000` app partition. The new integer-scaled animation, Today Panel gestures,
-clock/weather exchange, and Serial acknowledgements still require direct
-physical observation. If the stock ST7701 route becomes unreliable, migrate to
-the hardware-tested manual DPI bring-up rather than changing timings at random.
+revision v1.3 unit, and its written image hashes were verified. The full v2
+animation asset has also been linked locally. The Settings and Codex Usage
+surfaces, P4/C6 SDIO link, Wi-Fi connection, BLE advertising, updated Serial
+exchange, and concurrent display/touch stability still require the physical
+checks above. If the stock ST7701 route becomes unreliable, migrate to the
+hardware-tested manual DPI bring-up rather than changing timings at random.

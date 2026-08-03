@@ -186,6 +186,23 @@ pet_protocol_result_t pet_protocol_parse(const char *line, pet_command_t *comman
         return PET_PROTOCOL_OK;
     }
 
+    if (strcmp(tokens[0], "usage") == 0) {
+        if (count != 6) return PET_PROTOCOL_INVALID_FORMAT;
+        pet_usage_command_t *usage = &command->data.usage;
+        if (!parse_i64(tokens[1], 0, INT64_MAX, &usage->latest_session_tokens) ||
+            !parse_i64(tokens[2], 0, INT64_MAX, &usage->today_tokens) ||
+            !parse_i64(tokens[3], 0, INT64_MAX, &usage->today_cached_input_tokens) ||
+            !parse_i64(tokens[4], 0, INT64_MAX, &usage->today_input_tokens) ||
+            !parse_i64(tokens[5], 0, PET_MAX_UNIX_EPOCH, &usage->updated_epoch)) {
+            return PET_PROTOCOL_OUT_OF_RANGE;
+        }
+        if (usage->today_cached_input_tokens > usage->today_input_tokens) {
+            return PET_PROTOCOL_OUT_OF_RANGE;
+        }
+        command->type = PET_COMMAND_USAGE;
+        return PET_PROTOCOL_OK;
+    }
+
     if (count == 1) return PET_PROTOCOL_UNKNOWN;
     return PET_PROTOCOL_INVALID_FORMAT;
 }

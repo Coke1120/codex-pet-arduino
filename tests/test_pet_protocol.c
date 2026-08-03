@@ -35,6 +35,21 @@ int main(void)
     assert(command.data.weather.condition == PET_WEATHER_RAIN);
     assert(command.data.weather.updated_epoch == 1785782400LL);
 
+    command = parse_ok("usage 1234 5678 345 4321 1785782400");
+    assert(command.type == PET_COMMAND_USAGE);
+    assert(command.data.usage.latest_session_tokens == 1234);
+    assert(command.data.usage.today_tokens == 5678);
+    assert(command.data.usage.today_cached_input_tokens == 345);
+    assert(command.data.usage.today_input_tokens == 4321);
+    assert(command.data.usage.updated_epoch == 1785782400LL);
+
+    command = parse_ok("usage 9223372036854775807 9223372036854775807 9223372036854775807 9223372036854775807 253402250399");
+    assert(command.data.usage.latest_session_tokens == INT64_MAX);
+    assert(command.data.usage.today_tokens == INT64_MAX);
+    assert(command.data.usage.today_cached_input_tokens == INT64_MAX);
+    assert(command.data.usage.today_input_tokens == INT64_MAX);
+    assert(command.data.usage.updated_epoch == PET_MAX_UNIX_EPOCH);
+
     assert(pet_protocol_parse("", &command) == PET_PROTOCOL_EMPTY);
     assert(pet_protocol_parse("sleeping", &command) == PET_PROTOCOL_UNKNOWN);
     assert(pet_protocol_parse("clock 1", &command) == PET_PROTOCOL_INVALID_FORMAT);
@@ -46,6 +61,12 @@ int main(void)
     assert(pet_protocol_parse("weather 29 27 32 82 hail 1", &command) == PET_PROTOCOL_OUT_OF_RANGE);
     assert(pet_protocol_parse("weather 29 27 32 82 rain 9223372036854775807", &command) == PET_PROTOCOL_OUT_OF_RANGE);
     assert(pet_protocol_parse("status extra", &command) == PET_PROTOCOL_INVALID_FORMAT);
+    assert(pet_protocol_parse("usage 1 2 3 4", &command) == PET_PROTOCOL_INVALID_FORMAT);
+    assert(pet_protocol_parse("usage 1 2 three 4 5", &command) == PET_PROTOCOL_OUT_OF_RANGE);
+    assert(pet_protocol_parse("usage 9223372036854775808 2 3 4 5", &command) == PET_PROTOCOL_OUT_OF_RANGE);
+    assert(pet_protocol_parse("usage -1 2 3 4 5", &command) == PET_PROTOCOL_OUT_OF_RANGE);
+    assert(pet_protocol_parse("usage 1 2 5 4 5", &command) == PET_PROTOCOL_OUT_OF_RANGE);
+    assert(pet_protocol_parse("usage 1 2 3 4 253402250400", &command) == PET_PROTOCOL_OUT_OF_RANGE);
 
     assert(strcmp(pet_weather_condition_label(PET_WEATHER_PARTLY_CLOUDY), "Partly cloudy") == 0);
     assert(pet_weather_condition_is_critical(PET_WEATHER_THUNDER));

@@ -377,14 +377,14 @@ class ArduinoLinkTests(unittest.TestCase):
 
     def test_capability_probe_enables_only_known_v2_features(self) -> None:
         board = FakeBoard(
-            [b"pong\n", b"OK CAPABILITIES clock future_feature weather\n"]
+            [b"pong\n", b"OK CAPABILITIES clock future_feature usage weather\n"]
         )
         with patch.object(daemon.serial, "Serial", return_value=board), patch.object(
             daemon.time, "sleep"
         ):
             link = daemon.ArduinoLink("/dev/cu.test")
 
-        self.assertEqual(link.capabilities, {"clock", "weather"})
+        self.assertEqual(link.capabilities, {"clock", "usage", "weather"})
         self.assertEqual(board.writes, [b"ping\n", b"capabilities\n"])
 
     def test_capability_timeout_is_retryable_transport_failure(self) -> None:
@@ -396,21 +396,24 @@ class ArduinoLinkTests(unittest.TestCase):
             link._probe_capabilities(0.5)
         self.assertEqual(link.board.writes, [b"capabilities\n"])
 
-    def test_clock_and_weather_require_exact_ack_and_exact_writes(self) -> None:
+    def test_clock_weather_and_usage_require_exact_ack_and_exact_writes(self) -> None:
         snapshot = daemon.WeatherSnapshot(
             29.5, 27.0, 32.0, 82, "rain", 1_722_730_800
         )
         link = daemon.ArduinoLink.__new__(daemon.ArduinoLink)
-        link.board = FakeBoard([b"OK CLOCK\n", b"OK WEATHER\n"])
+        usage_snapshot = daemon.UsageSnapshot(100, 200, 50, 150, 1_722_730_800)
+        link.board = FakeBoard([b"OK CLOCK\n", b"OK WEATHER\n", b"OK USAGE\n"])
 
         link.send_clock(1_722_730_800, 28_800)
         link.send_weather(snapshot)
+        link.send_usage(usage_snapshot)
 
         self.assertEqual(
             link.board.writes,
             [
                 b"clock 1722730800 28800\n",
                 b"weather 29.5 27 32 82 rain 1722730800\n",
+                b"usage 100 200 50 150 1722730800\n",
             ],
         )
 
@@ -512,6 +515,11 @@ class WeatherSyncTests(unittest.TestCase):
             {"clock", "weather"},
         )
         self.assertEqual(daemon.parse_capabilities("OK CLOCK"), set())
+
+    def test_usage_capability_is_recognized(self) -> None:
+        self.assertEqual(
+            daemon.parse_capabilities("OK CAPABILITIES usage future"), {"usage"}
+        )
 
     def test_wmo_mapping_covers_protocol_conditions(self) -> None:
         cases = {
@@ -740,8 +748,72 @@ class WeatherSyncTests(unittest.TestCase):
         link.send_state.assert_called_once_with("running")
         link.send_clock.assert_not_called()
         link.send_weather.assert_not_called()
+        link.send_usage.assert_not_called()
         worker_class.assert_not_called()
         link.close.assert_called_once_with()
+
+    def test_once_with_usage_capability_refreshes_and_sends_aggregate(self) -> None:
+        snapshot = daemon.UsageSnapshot(100, 200, 50, 150, 1_722_730_800)
+        link = unittest.mock.Mock()
+        link.capabilities = {"usage"}
+        worker = unittest.mock.Mock()
+        worker.refresh_if_due.return_value = snapshot
+        worker.last_error.return_value = None
+
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            daemon.sys,
+            "argv",
+            [
+                "codex_pet_daemon.py",
+                "--state-dir",
+                temporary,
+                "--sessions-root",
+                str(Path(temporary) / "codex-sessions"),
+                "--port",
+                "/dev/cu.test",
+                "--once",
+            ],
+        ), patch.object(daemon, "choose_port", return_value="/dev/cu.test"), patch.object(
+            daemon, "ArduinoLink", return_value=link
+        ), patch.object(
+            daemon, "UsageWorker", return_value=worker
+        ) as worker_class, patch.object(
+            daemon.signal, "signal"
+        ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(daemon.main(), 0)
+
+        worker_class.assert_called_once_with(
+            Path(temporary) / "codex-sessions",
+            Path(temporary).parent / "usage-cache.json",
+        )
+        worker.refresh_if_due.assert_called_once_with(blocking=True)
+        link.send_usage.assert_called_once_with(snapshot)
+        link.close.assert_called_once_with()
+
+    def test_no_usage_disables_local_session_scanning(self) -> None:
+        link = unittest.mock.Mock()
+        link.capabilities = {"usage"}
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            daemon.sys,
+            "argv",
+            [
+                "codex_pet_daemon.py",
+                "--state-dir",
+                temporary,
+                "--port",
+                "/dev/cu.test",
+                "--no-usage",
+                "--once",
+            ],
+        ), patch.object(daemon, "choose_port", return_value="/dev/cu.test"), patch.object(
+            daemon, "ArduinoLink", return_value=link
+        ), patch.object(daemon, "UsageWorker") as worker_class, patch.object(
+            daemon.signal, "signal"
+        ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(daemon.main(), 0)
+
+        worker_class.assert_not_called()
+        link.send_usage.assert_not_called()
 
     def test_once_with_v2_link_sends_lifecycle_clock_and_weather(self) -> None:
         snapshot = daemon.WeatherSnapshot(29.5, 27.0, 32.0, 82, "rain", 200)

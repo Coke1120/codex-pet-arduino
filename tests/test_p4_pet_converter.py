@@ -54,7 +54,9 @@ class P4PetConverterTests(unittest.TestCase):
             * 3  # LVGL RGB565A8: two colour bytes plus one alpha byte.
             * len(converter.FRAME_SPECS)
         )
-        partition_bytes = 0x7F0000
+        # The 16 MiB board reserves its final 512 KiB while allowing the
+        # full v2 atlas and wireless stack to share the factory image.
+        partition_bytes = 0xF70000
         required_margin_bytes = 512 * 1024
         conservative_non_asset_budget = 0xC0000
 

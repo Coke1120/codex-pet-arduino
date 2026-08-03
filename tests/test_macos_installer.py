@@ -74,6 +74,10 @@ class MacInstallerTests(unittest.TestCase):
                 (runtime / "codex_pet_hook.py").read_bytes(),
                 (ROOT / "mac" / "codex_pet_hook.py").read_bytes(),
             )
+            self.assertEqual(
+                (runtime / "codex_pet_usage.py").read_bytes(),
+                (ROOT / "mac" / "codex_pet_usage.py").read_bytes(),
+            )
             with existing_plist.open("rb") as handle:
                 plist = plistlib.load(handle)
             self.assertEqual(plist["ProgramArguments"][-2:], ["--port", "/dev/cu.persisted"])

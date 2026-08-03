@@ -27,6 +27,7 @@ New-Item -ItemType Directory -Force -Path $Runtime | Out-Null
 Copy-Item (Join-Path $RepoRoot "mac\codex_pet_bridge.py") $Runtime -Force
 Copy-Item (Join-Path $RepoRoot "mac\codex_pet_daemon.py") $Runtime -Force
 Copy-Item (Join-Path $RepoRoot "mac\codex_pet_hook.py") $Runtime -Force
+Copy-Item (Join-Path $RepoRoot "mac\codex_pet_usage.py") $Runtime -Force
 Copy-Item (Join-Path $RepoRoot "mac\requirements.txt") $Runtime -Force
 Copy-Item (Join-Path $RepoRoot "tools\install_codex_hooks.py") $Runtime -Force
 

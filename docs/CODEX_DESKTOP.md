@@ -1,22 +1,15 @@
 # Direct Codex Desktop and CLI synchronization
 
-The Python hook and Serial daemon support both macOS and Windows. This page covers the shared design and macOS service setup; Windows users should follow [`WINDOWS.md`](WINDOWS.md). ESP32-P4 boards additionally negotiate clock and Hong Kong weather sync; legacy Uno boards remain lifecycle-only.
+The Python hook and Serial daemon support both macOS and Windows. This page covers the shared design and macOS service setup; Windows users should follow [`WINDOWS.md`](WINDOWS.md). ESP32-P4 boards additionally negotiate clock, Hong Kong weather, and local Codex usage sync; legacy Uno boards remain lifecycle-only.
 
 The basic `codex_pet_bridge.py` is intentionally manual: it sends only the state supplied through `--state`, `--interactive`, or `--stdin`. It does not inspect Codex Desktop automatically.
 
 For direct reflection, this repository uses the official Codex lifecycle hooks documented at <https://developers.openai.com/codex/hooks>:
 
 ```text
-Codex Desktop / CLI lifecycle event
-              │ JSON on stdin
-              ▼
-mac/codex_pet_hook.py
-              │ privacy-safe per-session state file
-              ▼
-mac/codex_pet_daemon.py
-              │ persistent USB Serial
-              ▼
-Arduino Codex Pet
+Codex lifecycle event ──▶ codex_pet_hook.py ──▶ lifecycle state ─┐
+                                                                   ├─▶ daemon ──▶ USB Serial ──▶ Pet
+~/.codex/sessions ──▶ codex_pet_usage.py ──▶ token aggregates ─┘
 ```
 
 ## State mapping
@@ -45,7 +38,35 @@ The hook stores only a hashed session key, mapped state, event name, and timesta
 
 It does **not** store prompts, assistant messages, tool output, transcript paths, or working-directory paths.
 
-On Windows, session records use `%LOCALAPPDATA%\CodexPet\sessions`. The same bridge discovers Windows `COM` ports instead of macOS `/dev/cu.*` devices.
+## Codex Usage data
+
+By default, the daemon reads Codex's local session files under
+`~/.codex/sessions` on macOS and Windows. It accepts only JSONL `event_msg`
+records whose payload type is `token_count`, then sends these five integers to a
+P4 that advertises the `usage` capability:
+
+- total tokens reported by the newest session event
+- sum of today's per-event token deltas
+- today's cached input tokens
+- today's input tokens, used with the cached count to calculate the displayed ratio
+- the local update time as a Unix timestamp
+
+The reader does not serialize prompt text, assistant messages, tool calls, tool
+output, paths, or arbitrary JSON fields. Its cache contains only the same five
+aggregate integers. These values describe locally recorded Codex activity; they
+are **not** a subscription quota, billing balance, or account-wide usage report.
+
+Today's totals follow the computer's local calendar day. The daemon refreshes
+the aggregate at most once per minute and preserves the last good cache if a
+session file is temporarily unreadable. The P4 marks the display aging after
+five minutes and stale after 30 minutes. An empty or missing sessions directory
+produces zero aggregates rather than guessing account usage. The default cache
+is `~/Library/Application Support/CodexPet/usage-cache.json` on macOS and
+`%LOCALAPPDATA%\CodexPet\usage-cache.json` on Windows.
+
+On Windows, lifecycle hook state records use
+`%LOCALAPPDATA%\CodexPet\sessions`. The same bridge discovers Windows `COM`
+ports instead of macOS `/dev/cu.*` devices.
 
 ## 1. Install Python dependency
 
@@ -74,7 +95,18 @@ Run the persistent bridge manually:
 ```
 
 If more than one plausible board is attached, identify the Uno with `arduino-cli board list`, then pass its exact `/dev/cu.*` path or Windows `COM` name using `--port`.
-The daemon re-sends the selected state every five seconds by default so a board reset cannot silently desynchronize the display. Use `--heartbeat SECONDS` to choose another positive interval. On a P4 that advertises `clock` and `weather`, it also sends local time once per minute and fetches Hong Kong weather in a background thread every 15 minutes. The weather worker starts only after capability negotiation, never during `--dry-run`, and can be disabled with `--no-weather`. Explicit legacy rejection keeps the connection lifecycle-only; a capability timeout is retried instead of silently downgrading a v2 board. Weather failures retain the cache and are reported once per distinct error until a successful refresh.
+The daemon re-sends the selected state every five seconds by default so a board reset cannot silently desynchronize the display. Use `--heartbeat SECONDS` to choose another positive interval. On a P4 that advertises `clock`, `weather`, and `usage`, it also sends local time once per minute, fetches Hong Kong weather in a background thread every 15 minutes, and reads local token aggregates at most once per minute. Each worker starts only after capability negotiation and never during `--dry-run`. Use `--no-weather` to disable network weather retrieval or `--no-usage` to disable local session scanning. Use `--sessions-root PATH` when Codex stores session JSONL files somewhere other than `~/.codex/sessions`:
+
+```bash
+.venv/bin/python codex_pet_daemon.py \
+  --port /dev/cu.<verified-p4-port> \
+  --sessions-root /path/to/codex/sessions
+```
+
+Explicit legacy rejection keeps the connection lifecycle-only; a capability
+timeout is retried instead of silently downgrading a v2 board. Weather and usage
+failures retain their last good caches and are reported once per distinct error
+until a successful refresh.
 
 ## 3. Configure Codex hooks
 
@@ -94,7 +126,8 @@ The hook always exits successfully and never makes allow/deny decisions, so a di
 macOS may deny background LaunchAgents access to source code kept under
 `Documents`. The installer maintains a small runtime copy under
 `~/Library/Application Support/CodexPet/runtime`, installs its isolated Python
-environment, and loads `com.coke1120.codex-pet` as a per-user LaunchAgent:
+environment, copies the usage reader with the daemon, and loads
+`com.coke1120.codex-pet` as a per-user LaunchAgent:
 
 ```bash
 cd /path/to/codex-pet-arduino
@@ -107,8 +140,11 @@ single service. When `--port` is omitted, an existing explicit port is
 preserved; pass `--port /dev/cu.usbmodem...` when more than one plausible board
 is attached, or `--port auto` to reset an explicit selection. The installer also
 migrates the former `org.example.codex-pet` LaunchAgent so only one daemon can
-own the Serial port. The daemon connection log identifies `clock, weather` after
-a successful P4 capability handshake, or `lifecycle-only` for a legacy board.
+own the Serial port. The installed LaunchAgent uses the default
+`~/.codex/sessions` root and enables usage collection when the P4 advertises it;
+`--no-usage` and `--sessions-root` are manual daemon options, not installer
+flags. The daemon connection log identifies `clock, usage, weather` after a
+successful P4 capability handshake, or `lifecycle-only` for a legacy board.
 
 To remove it:
 
@@ -129,6 +165,9 @@ With the daemon running and Arduino connected:
 3. Let Codex run tests, lint, review, or type checking: `review`.
 4. Trigger an approval request when the selected permission mode supports it: `waiting`.
 5. Let the turn finish: `idle`.
+6. On the P4 Home screen, swipe up and verify latest-session tokens, today's
+   total, cached-input ratio, and update time. Compare only against local
+   `token_count` events, not an account quota.
 
 Run the local regression tests after changes:
 
@@ -143,3 +182,6 @@ PYTHONPYCACHEPREFIX=/tmp/codex-pet-pycache \
 - Codex exposes lifecycle events, not a stable public API for the decorative on-screen pet's exact animation frame. This integration reflects agent activity states rather than scraping UI pixels.
 - `PermissionRequest` appears only when Codex actually asks for approval. A configuration such as `approval_policy = "never"` will not emit that event.
 - Hook definitions are security-sensitive executable configuration. Review and trust are intentionally user-controlled in Codex; do not bypass that trust flow for normal desktop use.
+- Codex session JSONL is a local implementation surface, not a stable billing
+  API. If its `token_count` schema changes, the reader keeps the last good
+  aggregate and reports a warning instead of reading unrelated transcript data.

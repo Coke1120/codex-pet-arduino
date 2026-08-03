@@ -12,22 +12,24 @@ compatible USB Serial lifecycle protocol:
 - **Arduino Uno R3 + 1.8-inch ST7735 128×160 TFT** — the original low-memory
   reference build with compressed pixel-art frames.
 - **GUITION JC4880P443C-I-W + 4.3-inch 480×800 IPS touch display** — an
-  ESP-IDF/LVGL build for the ESP32-P4, with the onboard ESP32-C6 available for
-  future wireless features.
+  ESP-IDF/LVGL build for the ESP32-P4, with Wi-Fi and Bluetooth Low Energy
+  provided by the onboard ESP32-C6 over SDIO.
 
 Both firmware implementations understand `idle`, `running`, `waiting`, and
 `review`. The Uno build can mirror the selected custom
 Codex pet through a gitignored generated header. The P4 public build uses a small
 red test tile so CI and new users can compile without private artwork; generating
 the gitignored local asset activates all 73 used frames in a Codex Pet v2 8×11
-atlas. The P4 extension capability-negotiates minute clock sync and Hong Kong
-weather from the Mac daemon, adds a pull-down Today Panel, and uses the v2 wave,
-jump, failure, directional-look, waiting, running, and review actions for touch
-and lifecycle reactions. Legacy Uno boards never receive the new commands.
+atlas. The P4 extension capability-negotiates minute clock sync, Hong Kong
+weather, and local Codex token aggregates from the desktop daemon. Its touch UI
+adds Today, Settings, and Codex Usage surfaces without replacing the v2 wave,
+jump, failure, directional-look, waiting, running, and review actions. Legacy
+Uno boards never receive the new commands.
 The underlying P4 board/display route was previously clean-built and flashed on
-the target board. This Today Pet revision has been linked with the full private
-v2 asset, but its selected-pet rendering, Serial acknowledgements, and touch/state
-behaviour still require physical acceptance. See [`docs/ESP32_P4.md`](docs/ESP32_P4.md).
+the target board. The current P4 firmware has been linked with the full private
+v2 asset, but its selected-pet rendering, wireless path, Serial acknowledgements,
+and touch/state behaviour still require physical acceptance. See
+[`docs/ESP32_P4.md`](docs/ESP32_P4.md).
 
 > Search keywords: Arduino desktop pet, Codex Pet, physical AI coding assistant, ST7735 animation, TFT_eSPI Arduino Uno, serial status display, pixel art robot pet, macOS and Windows Arduino bridge.
 
@@ -36,8 +38,11 @@ behaviour still require physical acceptance. See [`docs/ESP32_P4.md`](docs/ESP32
 - Four backwards-compatible lifecycle states: `idle`, `running`, `waiting`, and `review`
 - Full 73-frame Codex Pet v2 action and look-direction contract on ESP32-P4
 - Thin time/weather bar and pull-down Today Panel on the 480×800 touch target
+- Swipe-left Settings page for Wi-Fi scan/connect and BLE advertising
+- Swipe-up Codex Usage page for privacy-limited local token aggregates
 - Tap reactions with cooldown and priority-safe return to the current lifecycle state
 - Capability-gated clock and Hong Kong weather sync with a stale-data fallback
+- ESP32-P4 host plus ESP32-C6 Wi-Fi/BLE co-processor over ESP-Hosted SDIO
 - Large portrait pet view with a compact status strip
 - Real Codex custom-pet frames converted from the selected local atlas
 - 8-colour RLE assets and streaming SPI draws designed for Uno flash/RAM limits
@@ -63,7 +68,7 @@ behaviour still require physical acceptance. See [`docs/ESP32_P4.md`](docs/ESP32
 
 Additional shared diagnostic commands are `ping` and `status`. The P4 reports
 its optional v2 extensions through `capabilities` before the daemon sends clock
-or weather data.
+or weather and usage data.
 
 ## Firmware targets
 
@@ -72,10 +77,12 @@ or weather data.
 | Arduino Uno R3 | Arduino + TFT_eSPI 2.5.43 | ST7735S SPI, 128×160 | `arduino/CodexPet/` |
 | GUITION JC4880P443C-I-W | ESP-IDF 5.5.1 + LVGL 9 | ST7701S MIPI-DSI + GT911, 480×800 | `esp32-p4/` |
 
-The ESP32-P4 build uses the onboard ESP32-C6 only as hardware that is available
-for future networking; Codex state synchronization currently stays local over
-USB Serial. The enclosed camera is not initialized by this firmware; its
-inactivity remains part of the physical acceptance checklist.
+The ESP32-P4 build uses `esp_wifi_remote` and ESP-Hosted to run Wi-Fi and BLE on
+the onboard ESP32-C6. It supports Wi-Fi station scanning/connection and BLE
+advertising as `Codex Pet`; the C6 does not provide Classic Bluetooth in this
+configuration. Codex lifecycle, clock, weather, and usage synchronization stays
+local over USB Serial. The enclosed camera is not initialized by this firmware;
+its inactivity remains part of the physical acceptance checklist.
 See [`docs/ESP32_P4.md`](docs/ESP32_P4.md) for exact build, flash, and hardware
 verification instructions.
 
@@ -139,6 +146,7 @@ tools/convert_codex_pet.py              Codex atlas → Uno RLE header converter
 mac/codex_pet_bridge.py                 Cross-platform USB Serial bridge
 mac/codex_pet_hook.py                   Codex lifecycle hook event mapper
 mac/codex_pet_daemon.py                 Persistent event aggregator and Serial bridge
+mac/codex_pet_usage.py                  Local token-count aggregate reader
 mac/install.sh                          macOS runtime/LaunchAgent installer and updater
 mac/requirements.txt                    Python dependency
 windows/install.ps1                     Windows runtime/hooks/startup-task installer
@@ -349,9 +357,9 @@ idf.py set-target esp32p4
 idf.py build
 ```
 
-See [`docs/ESP32_P4.md`](docs/ESP32_P4.md) for the asset generator, exact port
-identification, Today Panel protocol, flash procedure, and physical acceptance
-checklist.
+See [`docs/ESP32_P4.md`](docs/ESP32_P4.md) for the asset generator, P4 and C6
+port identification, touch navigation, Serial protocol, flash procedures, and
+physical acceptance checklist.
 
 GitHub Actions repeats the Python and Uno checks plus a rights-safe ESP32-P4
 build carrying the full v2 asset byte footprint for every push and pull request.
@@ -380,7 +388,7 @@ This is enough for a large two-frame loop in each of the four states, but not fo
 
 ## Ideas for expansion
 
-- Add left-swipe Codex activity and right-swipe Mac status panels
+- Add a right-swipe Mac status panel
 - Add long-press Focus and Pomodoro quick actions
 - Add automatic night dimming and a dedicated sleeping sequence
 - Store compact RGB565 sprite frames in `PROGMEM`

@@ -22,6 +22,7 @@
 #include "pet_generated.h"
 #include "pet_interaction.h"
 #include "pet_protocol.h"
+#include "pet_wireless.h"
 
 #define DISPLAY_WIDTH 480
 #define DISPLAY_HEIGHT 800
@@ -31,6 +32,8 @@
 #define PET_PANEL_TOP 520
 #define TAP_COOLDOWN_US (2500LL * 1000LL)
 #define ACTION_CONTEXT (-1)
+#define SETTINGS_NETWORK_BUTTON_COUNT 6
+#define PAGE_ANIMATION_MS 220
 
 static const char *TAG = "codex_pet";
 
@@ -215,6 +218,11 @@ typedef struct {
 } weather_data_t;
 
 typedef struct {
+    bool valid;
+    pet_usage_command_t values;
+} usage_data_t;
+
+typedef struct {
     lv_obj_t *screen;
     lv_obj_t *image;
     lv_obj_t *top_bar;
@@ -234,6 +242,28 @@ typedef struct {
     lv_obj_t *today_updated;
     lv_obj_t *pet_tap_zone;
     lv_obj_t *top_gesture_zone;
+    lv_obj_t *settings_page;
+    lv_obj_t *settings_backend;
+    lv_obj_t *settings_wifi;
+    lv_obj_t *settings_wifi_button;
+    lv_obj_t *settings_wifi_button_label;
+    lv_obj_t *settings_scan_button;
+    lv_obj_t *settings_scan_button_label;
+    lv_obj_t *settings_forget_button;
+    lv_obj_t *settings_ble;
+    lv_obj_t *settings_ble_button;
+    lv_obj_t *settings_ble_button_label;
+    lv_obj_t *settings_network_buttons[SETTINGS_NETWORK_BUTTON_COUNT];
+    lv_obj_t *settings_network_labels[SETTINGS_NETWORK_BUTTON_COUNT];
+    lv_obj_t *usage_page;
+    lv_obj_t *usage_latest;
+    lv_obj_t *usage_today;
+    lv_obj_t *usage_cache;
+    lv_obj_t *usage_updated;
+    lv_obj_t *password_dialog;
+    lv_obj_t *password_title;
+    lv_obj_t *password_textarea;
+    lv_obj_t *password_keyboard;
     lv_timer_t *animation_timer;
     lv_timer_t *info_timer;
     pet_lifecycle_t lifecycle;
@@ -243,12 +273,25 @@ typedef struct {
     uint8_t action_frame;
     int32_t panel_progress;
     int32_t gesture_start_progress;
+    int32_t settings_progress;
+    int32_t usage_progress;
+    int16_t gesture_start_x;
     int16_t gesture_start_y;
     bool gesture_active;
     bool gesture_moved;
+    bool navigation_animating;
+    bool wireless_start_failed;
+    pet_surface_t active_surface;
+    pet_surface_t gesture_surface;
+    pet_surface_t navigation_animation_surface;
+    int32_t navigation_animation_target;
+    pet_gesture_axis_t gesture_axis;
     int64_t last_tap_us;
+    char selected_ssid[PET_WIRELESS_MAX_SSID_LEN + 1U];
     clock_data_t clock;
     weather_data_t weather;
+    usage_data_t usage;
+    pet_wireless_snapshot_t wireless;
 } pet_ui_t;
 
 static pet_ui_t ui;
@@ -449,6 +492,201 @@ static const char *weather_short_label(pet_weather_condition_t condition)
     }
 }
 
+static const char *wireless_backend_label(pet_wireless_backend_state_t state)
+{
+    switch (state) {
+    case PET_WIRELESS_BACKEND_STARTING: return "P4 + C6 backend starting";
+    case PET_WIRELESS_BACKEND_READY: return "P4 + C6 backend ready";
+    case PET_WIRELESS_BACKEND_ERROR: return "P4 + C6 backend unavailable";
+    default: return "P4 + C6 backend stopped";
+    }
+}
+
+static const char *wireless_ble_label(pet_wireless_ble_state_t state)
+{
+    switch (state) {
+    case PET_WIRELESS_BLE_STARTING: return "Bluetooth LE starting";
+    case PET_WIRELESS_BLE_IDLE: return "Bluetooth LE ready";
+    case PET_WIRELESS_BLE_ADVERTISING: return "Advertising as Codex Pet";
+    case PET_WIRELESS_BLE_ERROR: return "Bluetooth LE unavailable";
+    default: return "Bluetooth LE disabled";
+    }
+}
+
+static void format_token_count(char *buffer, size_t capacity, int64_t tokens)
+{
+    if (tokens >= 1000000) {
+        snprintf(buffer, capacity, "%lld.%01lldM", (long long)(tokens / 1000000),
+                 (long long)((tokens % 1000000) / 100000));
+    } else if (tokens >= 1000) {
+        snprintf(buffer, capacity, "%lld.%01lldK", (long long)(tokens / 1000),
+                 (long long)((tokens % 1000) / 100));
+    } else {
+        snprintf(buffer, capacity, "%lld", (long long)tokens);
+    }
+}
+
+static void update_usage_labels_locked(void)
+{
+    if (!ui.usage.valid) {
+        lv_label_set_text(ui.usage_latest, "--");
+        lv_label_set_text(ui.usage_today, "--");
+        lv_label_set_text(ui.usage_cache, "--");
+        lv_label_set_text(ui.usage_updated, "Waiting for local usage from Mac");
+        return;
+    }
+
+    const pet_usage_command_t *usage = &ui.usage.values;
+    char latest[24];
+    char today[24];
+    char cache[32];
+    char freshness_text[80];
+    format_token_count(latest, sizeof(latest), usage->latest_session_tokens);
+    format_token_count(today, sizeof(today), usage->today_tokens);
+    lv_label_set_text(ui.usage_latest, latest);
+    lv_label_set_text(ui.usage_today, today);
+
+    if (usage->today_input_tokens > 0) {
+        int64_t percentage;
+        if (usage->today_cached_input_tokens >= usage->today_input_tokens) {
+            percentage = 100;
+        } else if (usage->today_cached_input_tokens <= INT64_MAX / 100) {
+            percentage = usage->today_cached_input_tokens * 100 /
+                         usage->today_input_tokens;
+        } else {
+            int64_t divisor = usage->today_input_tokens / 100 +
+                              (usage->today_input_tokens % 100 != 0);
+            percentage = usage->today_cached_input_tokens / divisor;
+        }
+        if (percentage > 100) percentage = 100;
+        snprintf(cache, sizeof(cache), "%lld%%", (long long)percentage);
+        lv_label_set_text(ui.usage_cache, cache);
+    } else {
+        lv_label_set_text(ui.usage_cache, "--");
+    }
+
+    int64_t now = current_epoch_locked();
+    int64_t age = now >= usage->updated_epoch ? now - usage->updated_epoch : -1;
+    pet_usage_freshness_t freshness = pet_usage_freshness(now, usage->updated_epoch);
+    if (freshness == PET_USAGE_STALE) {
+        snprintf(freshness_text, sizeof(freshness_text),
+                 "Mac usage sync stale - updated %lldm ago", (long long)(age / 60));
+        lv_obj_set_style_text_color(ui.usage_updated, lv_color_hex(0xF4C95D), 0);
+    } else if (freshness == PET_USAGE_AGING) {
+        snprintf(freshness_text, sizeof(freshness_text),
+                 "Mac usage sync delayed - updated %lldm ago", (long long)(age / 60));
+        lv_obj_set_style_text_color(ui.usage_updated, lv_color_hex(0xF4C95D), 0);
+    } else if (freshness == PET_USAGE_FRESH) {
+        snprintf(freshness_text, sizeof(freshness_text),
+                 "Updated %lldm ago from local session logs", (long long)(age / 60));
+        lv_obj_set_style_text_color(ui.usage_updated, lv_color_hex(0x82909E), 0);
+    } else {
+        snprintf(freshness_text, sizeof(freshness_text),
+                 "Synced from local Mac session logs");
+        lv_obj_set_style_text_color(ui.usage_updated, lv_color_hex(0x82909E), 0);
+    }
+    lv_label_set_text(ui.usage_updated, freshness_text);
+}
+
+static void update_wireless_labels_locked(void)
+{
+    pet_wireless_snapshot_t snapshot;
+    if (!pet_wireless_get_snapshot(&snapshot)) {
+        if (ui.wireless_start_failed) {
+            lv_label_set_text(ui.settings_backend, "P4 + C6 backend unavailable");
+            lv_label_set_text(ui.settings_wifi, "Wi-Fi unavailable");
+            lv_label_set_text(ui.settings_ble, "Bluetooth LE unavailable");
+            lv_obj_add_state(ui.settings_wifi_button, LV_STATE_DISABLED);
+            lv_obj_add_state(ui.settings_scan_button, LV_STATE_DISABLED);
+            lv_obj_add_state(ui.settings_ble_button, LV_STATE_DISABLED);
+        }
+        return;
+    }
+    ui.wireless = snapshot;
+
+    bool backend_ready = snapshot.backend == PET_WIRELESS_BACKEND_READY;
+    bool wifi_available = backend_ready &&
+        snapshot.wifi != PET_WIRELESS_WIFI_SCANNING &&
+        snapshot.wifi != PET_WIRELESS_WIFI_CONNECTING;
+    bool scan_available = backend_ready &&
+        snapshot.wifi != PET_WIRELESS_WIFI_DISABLED &&
+        snapshot.wifi != PET_WIRELESS_WIFI_SCANNING &&
+        snapshot.wifi != PET_WIRELESS_WIFI_CONNECTING;
+    bool connect_available = scan_available &&
+        snapshot.wifi != PET_WIRELESS_WIFI_CONNECTED;
+    bool ble_available = backend_ready &&
+        (snapshot.ble == PET_WIRELESS_BLE_IDLE ||
+         snapshot.ble == PET_WIRELESS_BLE_ADVERTISING);
+    if (wifi_available) lv_obj_remove_state(ui.settings_wifi_button, LV_STATE_DISABLED);
+    else lv_obj_add_state(ui.settings_wifi_button, LV_STATE_DISABLED);
+    if (scan_available) lv_obj_remove_state(ui.settings_scan_button, LV_STATE_DISABLED);
+    else lv_obj_add_state(ui.settings_scan_button, LV_STATE_DISABLED);
+    if (ble_available) lv_obj_remove_state(ui.settings_ble_button, LV_STATE_DISABLED);
+    else lv_obj_add_state(ui.settings_ble_button, LV_STATE_DISABLED);
+    if (backend_ready && snapshot.wifi != PET_WIRELESS_WIFI_SCANNING &&
+        snapshot.wifi != PET_WIRELESS_WIFI_CONNECTING) {
+        lv_obj_remove_state(ui.settings_forget_button, LV_STATE_DISABLED);
+    } else {
+        lv_obj_add_state(ui.settings_forget_button, LV_STATE_DISABLED);
+    }
+
+    lv_label_set_text(ui.settings_backend, wireless_backend_label(snapshot.backend));
+    char wifi_text[96];
+    switch (snapshot.wifi) {
+    case PET_WIRELESS_WIFI_DISABLED:
+        snprintf(wifi_text, sizeof(wifi_text), "Wi-Fi disabled");
+        break;
+    case PET_WIRELESS_WIFI_SCANNING:
+        snprintf(wifi_text, sizeof(wifi_text), "Scanning for Wi-Fi networks...");
+        break;
+    case PET_WIRELESS_WIFI_CONNECTING:
+        snprintf(wifi_text, sizeof(wifi_text), "Connecting to %.32s...", snapshot.ssid);
+        break;
+    case PET_WIRELESS_WIFI_CONNECTED:
+        snprintf(wifi_text, sizeof(wifi_text), "Connected to %.32s  %d dBm",
+                 snapshot.ssid, snapshot.rssi);
+        break;
+    case PET_WIRELESS_WIFI_ERROR:
+        snprintf(wifi_text, sizeof(wifi_text), "Wi-Fi error (%ld)", (long)snapshot.last_error);
+        break;
+    default:
+        snprintf(wifi_text, sizeof(wifi_text), "Wi-Fi ready");
+        break;
+    }
+    lv_label_set_text(ui.settings_wifi, wifi_text);
+    lv_label_set_text(ui.settings_wifi_button_label,
+                      snapshot.wifi == PET_WIRELESS_WIFI_DISABLED ? "Enable" : "Disable");
+    lv_label_set_text(ui.settings_scan_button_label,
+                      snapshot.wifi == PET_WIRELESS_WIFI_SCANNING ? "Scanning" : "Scan");
+    lv_label_set_text(ui.settings_ble, wireless_ble_label(snapshot.ble));
+    lv_label_set_text(ui.settings_ble_button_label,
+                      snapshot.ble == PET_WIRELESS_BLE_ADVERTISING ? "Stop" : "Advertise");
+
+    if (snapshot.ssid[0] != '\0') {
+        lv_obj_remove_flag(ui.settings_forget_button, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(ui.settings_forget_button, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    for (size_t index = 0; index < SETTINGS_NETWORK_BUTTON_COUNT; ++index) {
+        if (index >= snapshot.scan_result_count) {
+            lv_obj_add_flag(ui.settings_network_buttons[index], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        char network_text[64];
+        const pet_wireless_access_point_t *access_point = &snapshot.scan_results[index];
+        snprintf(network_text, sizeof(network_text), "%.32s  %d dBm%s", access_point->ssid,
+                 access_point->rssi, access_point->open ? "  open" : "  secure");
+        lv_label_set_text(ui.settings_network_labels[index], network_text);
+        if (connect_available) {
+            lv_obj_remove_state(ui.settings_network_buttons[index], LV_STATE_DISABLED);
+        } else {
+            lv_obj_add_state(ui.settings_network_buttons[index], LV_STATE_DISABLED);
+        }
+        lv_obj_remove_flag(ui.settings_network_buttons[index], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 static void update_info_labels_locked(void)
 {
     int64_t now = current_epoch_locked();
@@ -539,6 +777,8 @@ static void update_info_timer(lv_timer_t *timer)
 {
     (void)timer;
     update_info_labels_locked();
+    update_usage_labels_locked();
+    update_wireless_labels_locked();
 }
 
 static void apply_clock_locked(const pet_clock_command_t *clock)
@@ -569,6 +809,13 @@ static void apply_weather_locked(const pet_weather_command_t *weather)
         reaction = ACTION_SLEEPY;
     }
     queue_or_start_action_locked(reaction);
+}
+
+static void apply_usage_locked(const pet_usage_command_t *usage)
+{
+    ui.usage.valid = true;
+    ui.usage.values = *usage;
+    update_usage_labels_locked();
 }
 
 static void set_pet_render_top_locked(int32_t top)
@@ -628,6 +875,8 @@ static void animate_panel_to_locked(int32_t target)
     lv_anim_set_duration(&animation, 220);
     lv_anim_set_path_cb(&animation, lv_anim_path_ease_out);
     lv_anim_start(&animation);
+    ui.active_surface = target == PET_PANEL_PROGRESS_MAX
+        ? PET_SURFACE_TODAY : PET_SURFACE_HOME;
 
     if (target == 0 && ui.pending_action == ACTION_LOOK_UP) {
         ui.pending_action = ACTION_COUNT;
@@ -639,6 +888,12 @@ static void animate_panel_to_locked(int32_t target)
 static void panel_drag_event(lv_event_t *event)
 {
     lv_event_code_t code = lv_event_get_code(event);
+    if (ui.navigation_animating || ui.settings_progress > 0 || ui.usage_progress > 0) {
+        if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+            ui.gesture_active = false;
+        }
+        return;
+    }
     lv_indev_t *input = lv_indev_active();
     if (input == NULL) return;
 
@@ -657,17 +912,157 @@ static void panel_drag_event(lv_event_t *event)
         }
         set_panel_progress_locked(pet_panel_progress_from_drag(
             ui.gesture_start_progress, delta, TODAY_PANEL_HEIGHT));
-    } else if (code == LV_EVENT_RELEASED && ui.gesture_active) {
+    } else if ((code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) &&
+               ui.gesture_active) {
         int32_t delta = point.y - ui.gesture_start_y;
+        if (code == LV_EVENT_PRESS_LOST) delta = 0;
         int32_t target = pet_panel_release_target(ui.panel_progress, delta);
         animate_panel_to_locked(target);
         ui.gesture_active = false;
     }
 }
 
+static void set_settings_progress_locked(int32_t progress)
+{
+    if (progress < 0) progress = 0;
+    if (progress > PET_PANEL_PROGRESS_MAX) progress = PET_PANEL_PROGRESS_MAX;
+    ui.settings_progress = progress;
+    lv_obj_set_x(ui.settings_page, DISPLAY_WIDTH -
+                 DISPLAY_WIDTH * progress / PET_PANEL_PROGRESS_MAX);
+}
+
+static void set_usage_progress_locked(int32_t progress)
+{
+    if (progress < 0) progress = 0;
+    if (progress > PET_PANEL_PROGRESS_MAX) progress = PET_PANEL_PROGRESS_MAX;
+    ui.usage_progress = progress;
+    lv_obj_set_y(ui.usage_page, DISPLAY_HEIGHT -
+                 DISPLAY_HEIGHT * progress / PET_PANEL_PROGRESS_MAX);
+}
+
+static void settings_progress_animation(void *variable, int32_t value)
+{
+    (void)variable;
+    set_settings_progress_locked(value);
+}
+
+static void usage_progress_animation(void *variable, int32_t value)
+{
+    (void)variable;
+    set_usage_progress_locked(value);
+}
+
+static void page_animation_completed(lv_anim_t *animation)
+{
+    (void)animation;
+    ui.active_surface = ui.navigation_animation_target == PET_PANEL_PROGRESS_MAX
+        ? ui.navigation_animation_surface : PET_SURFACE_HOME;
+    ui.navigation_animating = false;
+}
+
+static void animate_page_to_locked(pet_surface_t surface, int32_t target)
+{
+    lv_anim_exec_xcb_t callback = surface == PET_SURFACE_SETTINGS
+        ? settings_progress_animation : usage_progress_animation;
+    int32_t progress = surface == PET_SURFACE_SETTINGS
+        ? ui.settings_progress : ui.usage_progress;
+    lv_anim_delete(&ui, callback);
+
+    lv_anim_t animation;
+    lv_anim_init(&animation);
+    lv_anim_set_var(&animation, &ui);
+    lv_anim_set_exec_cb(&animation, callback);
+    lv_anim_set_values(&animation, progress, target);
+    lv_anim_set_duration(&animation, PAGE_ANIMATION_MS);
+    lv_anim_set_path_cb(&animation, lv_anim_path_ease_out);
+    lv_anim_set_completed_cb(&animation, page_animation_completed);
+    ui.navigation_animation_surface = surface;
+    ui.navigation_animation_target = target;
+    ui.navigation_animating = true;
+    lv_anim_start(&animation);
+}
+
+static void page_navigation_event(lv_event_t *event)
+{
+    lv_event_code_t code = lv_event_get_code(event);
+    lv_indev_t *input = lv_indev_active();
+    if (input == NULL || ui.navigation_animating || ui.panel_progress > 0 ||
+        !lv_obj_has_flag(ui.password_dialog, LV_OBJ_FLAG_HIDDEN)) return;
+
+    lv_point_t point;
+    lv_indev_get_point(input, &point);
+    if (code == LV_EVENT_PRESSED) {
+        if (ui.active_surface == PET_SURFACE_TODAY) return;
+        ui.gesture_active = true;
+        ui.gesture_moved = false;
+        ui.gesture_axis = PET_GESTURE_AXIS_NONE;
+        ui.gesture_surface = ui.active_surface;
+        ui.gesture_start_x = point.x;
+        ui.gesture_start_y = point.y;
+        ui.gesture_start_progress = ui.active_surface == PET_SURFACE_SETTINGS
+            ? ui.settings_progress : ui.active_surface == PET_SURFACE_USAGE
+            ? ui.usage_progress : 0;
+        lv_anim_delete(&ui, settings_progress_animation);
+        lv_anim_delete(&ui, usage_progress_animation);
+        return;
+    }
+    if (!ui.gesture_active) return;
+
+    int32_t delta_x = point.x - ui.gesture_start_x;
+    int32_t delta_y = point.y - ui.gesture_start_y;
+    if (code == LV_EVENT_PRESSING) {
+        if (ui.gesture_axis == PET_GESTURE_AXIS_NONE) {
+            ui.gesture_axis = pet_navigation_axis_lock(delta_x, delta_y);
+            if (ui.gesture_axis == PET_GESTURE_AXIS_NONE) return;
+            pet_surface_t target = pet_navigation_target(
+                ui.active_surface, ui.gesture_axis, delta_x, delta_y, ui.gesture_start_y);
+            if (ui.active_surface == PET_SURFACE_HOME) {
+                if (target != PET_SURFACE_SETTINGS && target != PET_SURFACE_USAGE) {
+                    ui.gesture_active = false;
+                    return;
+                }
+                ui.gesture_surface = target;
+            } else if (target != PET_SURFACE_HOME) {
+                ui.gesture_active = false;
+                return;
+            }
+        }
+        if (delta_x > PANEL_DRAG_THRESHOLD || delta_x < -PANEL_DRAG_THRESHOLD ||
+            delta_y > PANEL_DRAG_THRESHOLD || delta_y < -PANEL_DRAG_THRESHOLD) {
+            ui.gesture_moved = true;
+        }
+        int32_t progress = pet_navigation_progress_from_drag(
+            ui.gesture_surface, ui.gesture_start_progress, delta_x, delta_y);
+        if (ui.gesture_surface == PET_SURFACE_SETTINGS) {
+            set_settings_progress_locked(progress);
+        } else {
+            set_usage_progress_locked(progress);
+        }
+    } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        if (ui.gesture_axis != PET_GESTURE_AXIS_NONE) {
+            int32_t progress = ui.gesture_surface == PET_SURFACE_SETTINGS
+                ? ui.settings_progress : ui.usage_progress;
+            int32_t opening_delta = pet_navigation_opening_delta(
+                ui.gesture_surface, delta_x, delta_y);
+            animate_page_to_locked(ui.gesture_surface,
+                pet_navigation_release_target(progress, opening_delta));
+        }
+        ui.gesture_active = false;
+    }
+}
+
+static void close_page_event(lv_event_t *event)
+{
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED || ui.navigation_animating) return;
+    pet_surface_t surface = (pet_surface_t)(uintptr_t)lv_event_get_user_data(event);
+    animate_page_to_locked(surface, 0);
+}
+
 static void tap_pet(lv_event_t *event)
 {
-    if (lv_event_get_code(event) != LV_EVENT_CLICKED || ui.panel_progress > 0) return;
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED || ui.panel_progress > 0 ||
+        ui.active_surface != PET_SURFACE_HOME || ui.gesture_moved ||
+        ui.navigation_animating) return;
     int64_t now = esp_timer_get_time();
     if (now - ui.last_tap_us < TAP_COOLDOWN_US) return;
     ui.last_tap_us = now;
@@ -688,7 +1083,9 @@ static void tap_pet(lv_event_t *event)
 
 static void cycle_state(lv_event_t *event)
 {
-    if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED ||
+        ui.active_surface != PET_SURFACE_HOME || ui.gesture_moved ||
+        ui.navigation_animating) return;
     pet_lifecycle_t current = get_protocol_state();
     apply_lifecycle_locked((pet_lifecycle_t)((current + 1) % 4));
 }
@@ -703,6 +1100,271 @@ static lv_obj_t *create_label(lv_obj_t *parent, const char *text, const lv_font_
     lv_obj_set_pos(label, x, y);
     lv_obj_remove_flag(label, LV_OBJ_FLAG_CLICKABLE);
     return label;
+}
+
+static lv_obj_t *create_button(lv_obj_t *parent, const char *text, int x, int y,
+                               int width, lv_event_cb_t callback, void *user_data,
+                               lv_obj_t **label_out)
+{
+    lv_obj_t *button = lv_button_create(parent);
+    lv_obj_set_size(button, width, 50);
+    lv_obj_set_pos(button, x, y);
+    lv_obj_set_style_radius(button, 14, 0);
+    lv_obj_set_style_bg_color(button, lv_color_hex(0x1D2A36), 0);
+    lv_obj_set_style_bg_color(button, lv_color_hex(0x2B4052), LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(button, 0, 0);
+    lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, user_data);
+    lv_obj_t *label = lv_label_create(button);
+    lv_label_set_text(label, text);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(label);
+    if (label_out != NULL) *label_out = label;
+    return button;
+}
+
+static void report_wireless_action_result(pet_wireless_result_t result)
+{
+    if (result == PET_WIRELESS_OK) return;
+    const char *message = result == PET_WIRELESS_BUSY
+        ? "Wireless busy - please retry"
+        : result == PET_WIRELESS_INVALID_STATE
+        ? "Wireless action unavailable"
+        : "Wireless action failed";
+    lv_label_set_text(ui.settings_backend, message);
+}
+
+static void wifi_toggle_event(lv_event_t *event)
+{
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    bool enabled = ui.wireless.wifi != PET_WIRELESS_WIFI_DISABLED;
+    report_wireless_action_result(pet_wireless_wifi_set_enabled(!enabled));
+}
+
+static void wifi_scan_event(lv_event_t *event)
+{
+    if (lv_event_get_code(event) == LV_EVENT_CLICKED) {
+        report_wireless_action_result(pet_wireless_wifi_scan());
+    }
+}
+
+static void wifi_forget_event(lv_event_t *event)
+{
+    if (lv_event_get_code(event) == LV_EVENT_CLICKED) {
+        report_wireless_action_result(pet_wireless_wifi_forget());
+    }
+}
+
+static void ble_toggle_event(lv_event_t *event)
+{
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    bool advertising = ui.wireless.ble == PET_WIRELESS_BLE_ADVERTISING;
+    report_wireless_action_result(pet_wireless_ble_set_advertising(!advertising));
+}
+
+static void hide_password_dialog_locked(void)
+{
+    lv_textarea_set_text(ui.password_textarea, "");
+    lv_obj_add_flag(ui.password_dialog, LV_OBJ_FLAG_HIDDEN);
+    ui.selected_ssid[0] = '\0';
+}
+
+static void clear_secret_buffer(char *buffer, size_t size)
+{
+    volatile char *bytes = buffer;
+    while (size-- > 0U) {
+        *bytes++ = '\0';
+    }
+}
+
+static void password_keyboard_event(lv_event_t *event)
+{
+    lv_event_code_t code = lv_event_get_code(event);
+    if (code == LV_EVENT_READY) {
+        char password[64];
+        snprintf(password, sizeof(password), "%s", lv_textarea_get_text(ui.password_textarea));
+        lv_textarea_set_text(ui.password_textarea, "");
+        pet_wireless_result_t result =
+            pet_wireless_wifi_connect(ui.selected_ssid, password);
+        clear_secret_buffer(password, sizeof(password));
+        if (result == PET_WIRELESS_OK) {
+            hide_password_dialog_locked();
+        } else if (result == PET_WIRELESS_INVALID_ARGUMENT) {
+            lv_label_set_text(ui.password_title, "Password must be 8-63 characters");
+        } else {
+            lv_label_set_text(ui.password_title, "Wi-Fi busy - please retry");
+        }
+    } else if (code == LV_EVENT_CANCEL) {
+        hide_password_dialog_locked();
+    }
+}
+
+static void network_button_event(lv_event_t *event)
+{
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    size_t index = (size_t)(uintptr_t)lv_event_get_user_data(event);
+    if (index >= ui.wireless.scan_result_count ||
+        index >= PET_WIRELESS_MAX_SCAN_RESULTS) return;
+
+    const pet_wireless_access_point_t *access_point = &ui.wireless.scan_results[index];
+    if (access_point->open) {
+        report_wireless_action_result(
+            pet_wireless_wifi_connect(access_point->ssid, ""));
+        return;
+    }
+
+    snprintf(ui.selected_ssid, sizeof(ui.selected_ssid), "%s", access_point->ssid);
+    char title[64];
+    snprintf(title, sizeof(title), "Password for %.32s", access_point->ssid);
+    lv_label_set_text(ui.password_title, title);
+    lv_textarea_set_text(ui.password_textarea, "");
+    lv_keyboard_set_textarea(ui.password_keyboard, ui.password_textarea);
+    lv_obj_remove_flag(ui.password_dialog, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(ui.password_dialog);
+}
+
+static void create_page_base(lv_obj_t *page)
+{
+    lv_obj_set_size(page, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    lv_obj_set_style_radius(page, 0, 0);
+    lv_obj_set_style_bg_color(page, lv_color_hex(0x0A131C), 0);
+    lv_obj_set_style_bg_opa(page, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(page, 0, 0);
+    lv_obj_set_style_pad_all(page, 0, 0);
+    lv_obj_clear_flag(page, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(page, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(page, page_navigation_event, LV_EVENT_ALL, NULL);
+}
+
+static void create_settings_page(void)
+{
+    ui.settings_page = lv_obj_create(ui.screen);
+    create_page_base(ui.settings_page);
+    lv_obj_set_pos(ui.settings_page, DISPLAY_WIDTH, 0);
+
+    create_button(ui.settings_page, LV_SYMBOL_LEFT, 18, 18, 54, close_page_event,
+                  (void *)(uintptr_t)PET_SURFACE_SETTINGS, NULL);
+    create_label(ui.settings_page, "SETTINGS", &lv_font_montserrat_20,
+                 lv_color_hex(0xFFFFFF), 92, 33);
+    create_label(ui.settings_page, "Wireless co-processor", &lv_font_montserrat_14,
+                 lv_color_hex(0x82909E), 24, 96);
+    ui.settings_backend = create_label(ui.settings_page, "P4 + C6 backend starting",
+                                       &lv_font_montserrat_14,
+                                       lv_color_hex(0xDDE6EF), 24, 124);
+
+    create_label(ui.settings_page, "WI-FI", &lv_font_montserrat_14,
+                 lv_color_hex(0x82909E), 24, 174);
+    ui.settings_wifi = create_label(ui.settings_page, "Wi-Fi starting",
+                                    &lv_font_montserrat_14,
+                                    lv_color_hex(0xDDE6EF), 24, 202);
+    ui.settings_wifi_button = create_button(
+        ui.settings_page, "Enable", 24, 236, 126, wifi_toggle_event, NULL,
+        &ui.settings_wifi_button_label);
+    ui.settings_scan_button = create_button(
+        ui.settings_page, "Scan", 162, 236, 126, wifi_scan_event, NULL,
+        &ui.settings_scan_button_label);
+    ui.settings_forget_button = create_button(ui.settings_page, "Forget", 300, 236, 156,
+                                               wifi_forget_event, NULL, NULL);
+    lv_obj_add_flag(ui.settings_forget_button, LV_OBJ_FLAG_HIDDEN);
+
+    create_label(ui.settings_page, "AVAILABLE NETWORKS", &lv_font_montserrat_14,
+                 lv_color_hex(0x82909E), 24, 310);
+    for (size_t index = 0; index < SETTINGS_NETWORK_BUTTON_COUNT; ++index) {
+        ui.settings_network_buttons[index] = create_button(
+            ui.settings_page, "", 24, 340 + (int)index * 56, 432, network_button_event,
+            (void *)(uintptr_t)index, &ui.settings_network_labels[index]);
+        lv_obj_add_flag(ui.settings_network_buttons[index], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    create_label(ui.settings_page, "BLUETOOTH LE", &lv_font_montserrat_14,
+                 lv_color_hex(0x82909E), 24, 690);
+    ui.settings_ble = create_label(ui.settings_page, "Bluetooth LE starting",
+                                   &lv_font_montserrat_14,
+                                   lv_color_hex(0xDDE6EF), 24, 718);
+    ui.settings_ble_button = create_button(
+        ui.settings_page, "Advertise", 312, 704, 144, ble_toggle_event, NULL,
+        &ui.settings_ble_button_label);
+    lv_obj_add_state(ui.settings_wifi_button, LV_STATE_DISABLED);
+    lv_obj_add_state(ui.settings_scan_button, LV_STATE_DISABLED);
+    lv_obj_add_state(ui.settings_ble_button, LV_STATE_DISABLED);
+}
+
+static void create_usage_page(void)
+{
+    ui.usage_page = lv_obj_create(ui.screen);
+    create_page_base(ui.usage_page);
+    lv_obj_set_pos(ui.usage_page, 0, DISPLAY_HEIGHT);
+
+    create_button(ui.usage_page, LV_SYMBOL_DOWN, 18, 18, 54, close_page_event,
+                  (void *)(uintptr_t)PET_SURFACE_USAGE, NULL);
+    create_label(ui.usage_page, "LOCAL CODEX USAGE", &lv_font_montserrat_20,
+                 lv_color_hex(0xFFFFFF), 92, 33);
+    create_label(ui.usage_page, "From this Mac - not plan quota", &lv_font_montserrat_14,
+                 lv_color_hex(0x82909E), 24, 104);
+
+    create_label(ui.usage_page, "LATEST SESSION", &lv_font_montserrat_14,
+                 lv_color_hex(0x82909E), 24, 176);
+    ui.usage_latest = create_label(ui.usage_page, "--", &lv_font_montserrat_28,
+                                   lv_color_hex(0xFFFFFF), 24, 210);
+    create_label(ui.usage_page, "tokens", &lv_font_montserrat_14,
+                 lv_color_hex(0xB9C6D2), 24, 252);
+
+    create_label(ui.usage_page, "TODAY", &lv_font_montserrat_14,
+                 lv_color_hex(0x82909E), 24, 328);
+    ui.usage_today = create_label(ui.usage_page, "--", &lv_font_montserrat_28,
+                                  lv_color_hex(0xFFFFFF), 24, 362);
+    create_label(ui.usage_page, "tokens", &lv_font_montserrat_14,
+                 lv_color_hex(0xB9C6D2), 24, 404);
+
+    create_label(ui.usage_page, "INPUT CACHE HIT", &lv_font_montserrat_14,
+                 lv_color_hex(0x82909E), 264, 328);
+    ui.usage_cache = create_label(ui.usage_page, "--", &lv_font_montserrat_28,
+                                  lv_color_hex(0xFFFFFF), 264, 362);
+    create_label(ui.usage_page, "of today's input", &lv_font_montserrat_14,
+                 lv_color_hex(0xB9C6D2), 264, 404);
+
+    lv_obj_t *note = create_label(ui.usage_page,
+        "Counts come from token counters in local Codex session logs.\n"
+        "Prompts and tool output never leave the Mac.",
+        &lv_font_montserrat_14, lv_color_hex(0x9EACB9), 24, 510);
+    lv_obj_set_width(note, 432);
+    lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+    ui.usage_updated = create_label(ui.usage_page, "Waiting for local usage from Mac",
+                                    &lv_font_montserrat_14,
+                                    lv_color_hex(0x82909E), 24, 690);
+    create_label(ui.usage_page, "Swipe down to return to your Pet",
+                 &lv_font_montserrat_14, lv_color_hex(0x60707E), 24, 744);
+}
+
+static void create_password_dialog(void)
+{
+    ui.password_dialog = lv_obj_create(ui.screen);
+    lv_obj_set_size(ui.password_dialog, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    lv_obj_set_pos(ui.password_dialog, 0, 0);
+    lv_obj_set_style_radius(ui.password_dialog, 0, 0);
+    lv_obj_set_style_bg_color(ui.password_dialog, lv_color_hex(0x081018), 0);
+    lv_obj_set_style_bg_opa(ui.password_dialog, (lv_opa_t)248, 0);
+    lv_obj_set_style_border_width(ui.password_dialog, 0, 0);
+    lv_obj_set_style_pad_all(ui.password_dialog, 0, 0);
+    lv_obj_clear_flag(ui.password_dialog, LV_OBJ_FLAG_SCROLLABLE);
+
+    ui.password_title = create_label(ui.password_dialog, "Wi-Fi password",
+                                     &lv_font_montserrat_20,
+                                     lv_color_hex(0xFFFFFF), 24, 54);
+    ui.password_textarea = lv_textarea_create(ui.password_dialog);
+    lv_obj_set_size(ui.password_textarea, 432, 58);
+    lv_obj_set_pos(ui.password_textarea, 24, 106);
+    lv_textarea_set_one_line(ui.password_textarea, true);
+    lv_textarea_set_password_mode(ui.password_textarea, true);
+    lv_textarea_set_max_length(ui.password_textarea, 63);
+    lv_textarea_set_placeholder_text(ui.password_textarea, "8-63 characters");
+
+    ui.password_keyboard = lv_keyboard_create(ui.password_dialog);
+    lv_obj_set_size(ui.password_keyboard, 456, 330);
+    lv_obj_align(ui.password_keyboard, LV_ALIGN_BOTTOM_MID, 0, -12);
+    lv_keyboard_set_textarea(ui.password_keyboard, ui.password_textarea);
+    lv_obj_add_event_cb(ui.password_keyboard, password_keyboard_event, LV_EVENT_ALL, NULL);
+    lv_obj_add_flag(ui.password_dialog, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void create_top_bar(void)
@@ -742,6 +1404,7 @@ static void create_status_card(void)
     lv_obj_set_style_border_color(ui.status_card, lifecycle_colour(PET_LIFECYCLE_IDLE), 0);
     lv_obj_clear_flag(ui.status_card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(ui.status_card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(ui.status_card, page_navigation_event, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui.status_card, cycle_state, LV_EVENT_CLICKED, NULL);
 
     ui.status_dot = lv_obj_create(ui.status_card);
@@ -821,6 +1484,7 @@ static void create_touch_zones(void)
     lv_obj_align(ui.pet_tap_zone, LV_ALIGN_TOP_MID, 0, 78);
     lv_obj_add_flag(ui.pet_tap_zone, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(ui.pet_tap_zone, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(ui.pet_tap_zone, page_navigation_event, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(ui.pet_tap_zone, tap_pet, LV_EVENT_CLICKED, NULL);
 
     ui.top_gesture_zone = lv_obj_create(ui.screen);
@@ -851,6 +1515,9 @@ static void create_ui(void)
     create_top_bar();
     create_today_panel();
     create_touch_zones();
+    create_settings_page();
+    create_usage_page();
+    create_password_dialog();
 
     ui.lifecycle = PET_LIFECYCLE_IDLE;
     ui.base_action = ACTION_IDLE;
@@ -858,10 +1525,17 @@ static void create_ui(void)
     ui.pending_action = ACTION_COUNT;
     ui.action_frame = 0;
     ui.panel_progress = 0;
+    ui.settings_progress = 0;
+    ui.usage_progress = 0;
+    ui.active_surface = PET_SURFACE_HOME;
+    ui.gesture_surface = PET_SURFACE_HOME;
+    ui.gesture_axis = PET_GESTURE_AXIS_NONE;
     ui.last_tap_us = -TAP_COOLDOWN_US;
     ui.animation_timer = lv_timer_create(update_animation, action_duration(ACTION_IDLE, 0), NULL);
     ui.info_timer = lv_timer_create(update_info_timer, 1000, NULL);
     update_info_labels_locked();
+    update_usage_labels_locked();
+    update_wireless_labels_locked();
 }
 
 static void process_command(char *line)
@@ -885,7 +1559,7 @@ static void process_command(char *line)
         printf("STATE %s\n", pet_lifecycle_name(get_protocol_state()));
         break;
     case PET_COMMAND_CAPABILITIES:
-        printf("CAPABILITIES 2 lifecycle clock weather today-v1\n");
+        printf("CAPABILITIES 2 lifecycle clock weather today-v1 usage usage-v1 wireless settings-v1\n");
         break;
     case PET_COMMAND_CLOCK:
         if (!bsp_display_lock(1000)) {
@@ -904,6 +1578,15 @@ static void process_command(char *line)
         apply_weather_locked(&command.data.weather);
         bsp_display_unlock();
         printf("OK WEATHER\n");
+        break;
+    case PET_COMMAND_USAGE:
+        if (!bsp_display_lock(1000)) {
+            printf("ERR display busy\n");
+            break;
+        }
+        apply_usage_locked(&command.data.usage);
+        bsp_display_unlock();
+        printf("OK USAGE\n");
         break;
     default:
         printf("ERR unknown command\n");
@@ -966,10 +1649,20 @@ void app_main(void)
     create_ui();
     bsp_display_unlock();
 
+    pet_wireless_result_t wireless_result = pet_wireless_start();
+    if (wireless_result != PET_WIRELESS_OK) {
+        ESP_LOGW(TAG, "Wireless backend did not start (%d)", wireless_result);
+        if (bsp_display_lock(1000)) {
+            ui.wireless_start_failed = true;
+            update_wireless_labels_locked();
+            bsp_display_unlock();
+        }
+    }
+
     printf("Codex Pet ESP32-P4 ready\n");
     printf("Board: JC4880P443C-I-W\n");
-    printf("Protocol: v2 lifecycle clock weather today-v1\n");
-    printf("Commands: idle running waiting review ping status capabilities clock weather\n");
+    printf("Protocol: v2 lifecycle clock weather today-v1 usage-v1 wireless settings-v1\n");
+    printf("Commands: idle running waiting review ping status capabilities clock weather usage\n");
 
     BaseType_t created = xTaskCreate(serial_task, "codex_pet_serial", 4096, NULL, 5, NULL);
     if (created != pdPASS) ESP_LOGE(TAG, "Could not start Serial task");

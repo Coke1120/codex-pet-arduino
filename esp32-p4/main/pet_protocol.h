@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define PET_PROTOCOL_LINE_CAPACITY 96
+#define PET_PROTOCOL_LINE_CAPACITY 128
 /* Latest UTC instant that remains within year 9999 at the protocol's
  * maximum timezone offset. This also keeps all firmware epoch arithmetic
  * comfortably inside int64_t. */
@@ -35,6 +35,7 @@ typedef enum {
     PET_COMMAND_CAPABILITIES,
     PET_COMMAND_CLOCK,
     PET_COMMAND_WEATHER,
+    PET_COMMAND_USAGE,
 } pet_command_type_t;
 
 typedef enum {
@@ -60,11 +61,20 @@ typedef struct {
 } pet_weather_command_t;
 
 typedef struct {
+    int64_t latest_session_tokens;
+    int64_t today_tokens;
+    int64_t today_cached_input_tokens;
+    int64_t today_input_tokens;
+    int64_t updated_epoch;
+} pet_usage_command_t;
+
+typedef struct {
     pet_command_type_t type;
     union {
         pet_lifecycle_t state;
         pet_clock_command_t clock;
         pet_weather_command_t weather;
+        pet_usage_command_t usage;
     } data;
 } pet_command_t;
 

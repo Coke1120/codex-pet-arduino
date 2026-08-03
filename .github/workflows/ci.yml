@@ -62,10 +62,26 @@ jobs:
           grep -q '^CONFIG_SPIRAM_SPEED_80M=y$' sdkconfig
           grep -q '^CONFIG_LV_DRAW_SW_SUPPORT_RGB565A8=y$' sdkconfig
           grep -q '^CONFIG_PARTITION_TABLE_CUSTOM=y$' sdkconfig
+          grep -q '^CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED=y$' sdkconfig
+          grep -q '^CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y$' sdkconfig
+          grep -q '^CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD=y$' sdkconfig
+          grep -q '^CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y$' sdkconfig
+          grep -q '^CONFIG_BT_NIMBLE_ENABLED=y$' sdkconfig
+          grep -q '^CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y$' sdkconfig
           test "$(git -C .. status --porcelain -- esp32-p4/dependencies.lock)" = ""
       - name: Build representative full-v2 firmware
         working-directory: esp32-p4
         run: idf.py build
+      - name: Build matching ESP32-C6 radio firmware
+        working-directory: esp32-p4
+        run: |
+          slave_project=managed_components/espressif__esp_hosted/slave
+          slave_build="$RUNNER_TEMP/codex-pet-c6-build"
+          idf.py -C "$slave_project" -B "$slave_build" set-target esp32c6
+          grep -q '^CONFIG_IDF_TARGET_ESP32C6=y$' "$slave_project/sdkconfig"
+          grep -q '^CONFIG_ESP_SDIO_HOST_INTERFACE=y$' "$slave_project/sdkconfig"
+          grep -q '^CONFIG_BT_ENABLED=y$' "$slave_project/sdkconfig"
+          idf.py -C "$slave_project" -B "$slave_build" build
       - name: Verify protocol parser and firmware size margin
         run: |
           # ESP-IDF prepends RISC-V binutils; keep host tests on the native
@@ -74,6 +90,8 @@ jobs:
           /tmp/pet_protocol_test
           env PATH=/usr/bin:/bin /usr/bin/cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=undefined tests/test_pet_interaction.c esp32-p4/main/pet_interaction.c -Iesp32-p4/main -o /tmp/pet_interaction_test
           /tmp/pet_interaction_test
+          env PATH=/usr/bin:/bin /usr/bin/cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=undefined tests/test_pet_wireless.c esp32-p4/main/pet_wireless_model.c -Iesp32-p4/main -o /tmp/pet_wireless_test
+          /tmp/pet_wireless_test
           riscv32-esp-elf-nm -S --size-sort esp32-p4/build/codex_pet_jc4880p443c.elf | grep -Eq '^[[:xdigit:]]+ 00679e60 [rR] pet_size_fixture_payload$'
           riscv32-esp-elf-nm -S --size-sort esp32-p4/build/codex_pet_jc4880p443c.elf | grep -Eq '^[[:xdigit:]]+ 000007fc [rR] pet_size_fixture_images$'
-          python -c "from pathlib import Path; size=Path('esp32-p4/build/codex_pet_jc4880p443c.bin').stat().st_size; limit=0x7F0000; assert size <= limit - 0x80000, f'firmware leaves less than 512 KiB margin: {size}/{limit}'"
+          python -c "from pathlib import Path; size=Path('esp32-p4/build/codex_pet_jc4880p443c.bin').stat().st_size; limit=0xF70000; assert size <= limit - 0x80000, f'firmware leaves less than 512 KiB margin: {size}/{limit}'"

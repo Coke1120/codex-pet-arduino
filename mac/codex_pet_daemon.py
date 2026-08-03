@@ -16,6 +16,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional, Set, Tuple
 
+MAC_DIR = Path(__file__).resolve().parent
+if str(MAC_DIR) not in sys.path:
+    sys.path.insert(0, str(MAC_DIR))
+
+from codex_pet_usage import UsageSnapshot, UsageWorker, build_usage_command
+
 try:
     import serial
     from serial.tools import list_ports
@@ -28,7 +34,7 @@ except ImportError as exc:
 VALID_STATES = ("idle", "running", "waiting", "review")
 STATE_PRIORITY = {"idle": 0, "running": 1, "review": 2, "waiting": 3}
 PORT_WARNING_INTERVAL = 30.0
-KNOWN_CAPABILITIES = frozenset(("clock", "weather"))
+KNOWN_CAPABILITIES = frozenset(("clock", "usage", "weather"))
 WEATHER_CONDITIONS = frozenset(
     (
         "clear",
@@ -504,6 +510,9 @@ class ArduinoLink:
     def send_weather(self, snapshot: WeatherSnapshot) -> None:
         self._exchange(build_weather_command(snapshot), "OK WEATHER")
 
+    def send_usage(self, snapshot: UsageSnapshot) -> None:
+        self._exchange(build_usage_command(snapshot), "OK USAGE")
+
 
 def _close_quietly(link: ArduinoLink) -> None:
     try:
@@ -532,6 +541,10 @@ def main() -> int:
     parser.add_argument("--weather-retry", type=positive_float, default=60.0)
     parser.add_argument("--weather-timeout", type=positive_float, default=10.0)
     parser.add_argument("--no-weather", action="store_true")
+    parser.add_argument(
+        "--sessions-root", type=Path, default=Path.home() / ".codex" / "sessions"
+    )
+    parser.add_argument("--no-usage", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
@@ -555,6 +568,9 @@ def main() -> int:
     weather_worker: Optional[WeatherWorker] = None
     sent_weather_epoch: Optional[int] = None
     reported_weather_error: Optional[str] = None
+    usage_worker: Optional[UsageWorker] = None
+    sent_usage: Optional[UsageSnapshot] = None
+    reported_usage_error: Optional[str] = None
 
     while not stopped:
         desired = aggregate_state(
@@ -579,6 +595,7 @@ def main() -> int:
                     next_heartbeat_at = 0.0
                     next_clock_at = 0.0
                     sent_weather_epoch = None
+                    sent_usage = None
                     if (
                         "weather" in link.capabilities
                         and not args.no_weather
@@ -592,6 +609,16 @@ def main() -> int:
                         )
                         weather_worker.start()
                         reported_weather_error = None
+                    if (
+                        "usage" in link.capabilities
+                        and not args.no_usage
+                        and usage_worker is None
+                    ):
+                        usage_worker = UsageWorker(
+                            args.sessions_root,
+                            args.state_dir.parent / "usage-cache.json",
+                        )
+                        reported_usage_error = None
                     negotiated = ", ".join(sorted(link.capabilities))
                     if not negotiated:
                         negotiated = "lifecycle-only"
@@ -669,6 +696,33 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 reported_weather_error = weather_error
+
+        if (
+            link is not None
+            and "usage" in link.capabilities
+            and usage_worker is not None
+        ):
+            snapshot = usage_worker.refresh_if_due(blocking=args.once)
+            if snapshot is not None and snapshot != sent_usage:
+                try:
+                    link.send_usage(snapshot)
+                    sent_usage = snapshot
+                except (OSError, serial.SerialException) as exc:
+                    print("Codex Pet serial warning: {}".format(exc), file=sys.stderr)
+                    _close_quietly(link)
+                    link = None
+                    next_connect_at = time.monotonic() + 2.0
+
+        if usage_worker is not None:
+            usage_error = usage_worker.last_error()
+            if usage_error is None:
+                reported_usage_error = None
+            elif usage_error != reported_usage_error:
+                print(
+                    "Codex Pet usage warning: {}".format(usage_error),
+                    file=sys.stderr,
+                )
+                reported_usage_error = usage_error
 
         if args.once:
             break
