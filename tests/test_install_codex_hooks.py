@@ -27,9 +27,17 @@ class InstallHooksTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "hooks.json"
             path.write_text(json.dumps(existing), encoding="utf-8")
-            installer.install(path, "python.exe", Path(r"C:\CodexPet\codex_pet_hook.py"))
+            installer.install(
+                path,
+                "/usr/bin/python3",
+                Path("/Library/Application Support/CodexPet/codex_pet_hook.py"),
+            )
             first = json.loads(path.read_text(encoding="utf-8"))
-            installer.install(path, "python.exe", Path(r"C:\CodexPet\codex_pet_hook.py"))
+            installer.install(
+                path,
+                "/usr/bin/python3",
+                Path("/Library/Application Support/CodexPet/codex_pet_hook.py"),
+            )
             second = json.loads(path.read_text(encoding="utf-8"))
 
         self.assertTrue(first["other"])

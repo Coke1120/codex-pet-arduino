@@ -3,12 +3,6 @@
 Codex Pet is MIT-licensed. Its optional build dependencies retain their own
 licenses and are not relicensed by this repository.
 
-## Arduino target
-
-- **TFT_eSPI 2.5.43** — free/open-source library by Bodmer and contributors.
-  Refer to the installed package and upstream repository for its current license
-  text: <https://github.com/Bodmer/TFT_eSPI>.
-
 ## ESP32-P4 target
 
 ESP-IDF Component Manager resolves the exact component graph recorded in
@@ -33,5 +27,5 @@ BSP with a clearly licensed implementation. Building it locally for hardware
 bring-up does not grant redistribution rights.
 
 Private/custom pet artwork is also excluded from this repository. Generated
-`pet_generated.c` and `pet_generated.h` files must not be published unless the
-artwork's redistribution rights are explicit.
+`pet_generated.c` files must not be published unless the artwork's
+redistribution rights are explicit.

@@ -35,6 +35,13 @@ def fake_port(device: str, description: str) -> ListPortInfo:
     return port
 
 
+def fake_generic_espressif_port(device: str) -> ListPortInfo:
+    port = fake_port(device, "USB JTAG/serial debug unit")
+    port.manufacturer = "Espressif"
+    port.vid = 0x303A
+    return port
+
+
 def write_record(path: Path, state: str, updated_at: float) -> None:
     path.write_text(
         json.dumps({"version": 1, "state": state, "updated_at": updated_at}),
@@ -43,11 +50,13 @@ def write_record(path: Path, state: str, updated_at: float) -> None:
 
 
 class HookTests(unittest.TestCase):
-    def test_default_state_dir_is_platform_appropriate(self) -> None:
-        with patch.dict(hook.os.environ, {"LOCALAPPDATA": r"C:\Users\Example\AppData\Local"}, clear=True), patch.object(hook.sys, "platform", "win32"):
+    def test_default_state_dir_is_macos_application_support(self) -> None:
+        with patch.dict(hook.os.environ, {}, clear=True), patch.object(
+            hook.Path, "home", return_value=Path("/Users/example")
+        ):
             self.assertEqual(
                 hook.default_state_dir(),
-                Path(r"C:\Users\Example\AppData\Local") / "CodexPet" / "sessions",
+                Path("/Users/example/Library/Application Support/CodexPet/sessions"),
             )
 
     def test_event_mapping(self) -> None:
@@ -188,31 +197,57 @@ class ManualBridgeTests(unittest.TestCase):
             bridge.normalise_state("sleeping")
 
     def test_port_helpers(self) -> None:
-        uno = fake_port("/dev/cu.usbmodem1", "Arduino UNO")
-        uno.vid = 0x2341
-        uno.pid = 0x0043
+        unsupported = fake_port("/dev/cu.usbmodem1", "ESP32-C6 USB JTAG")
+        unsupported.vid = 0x303A
+        unsupported.pid = 0x1001
         esp32_p4 = fake_port("/dev/cu.usbmodem2101", "ESP32-P4 USB JTAG/serial debug unit")
         esp32_p4.vid = 0x303A
         esp32_p4.pid = 0x1001
         adapter = fake_port("/dev/cu.usbserial-1", "USB Serial")
-        generic_esp = fake_port("/dev/cu.usbmodem3101", "USB JTAG/serial debug unit")
+        generic_esp = fake_generic_espressif_port("/dev/cu.usbmodem3101")
         c6 = fake_port("/dev/cu.usbmodem4101", "ESP32-C6 USB JTAG/serial debug unit")
-        self.assertGreater(bridge.board_score(uno), bridge.board_score(adapter))
+        self.assertEqual(bridge.board_score(unsupported), 0)
         self.assertGreater(bridge.board_score(esp32_p4), bridge.board_score(adapter))
         self.assertEqual(bridge.board_score(generic_esp), 10)
-        self.assertEqual(bridge.board_score(c6), 10)
-        self.assertIn("VID:PID=2341:0043", bridge.port_description(uno))
-        with patch.object(bridge, "detected_ports", return_value=[adapter, esp32_p4]):
+        self.assertEqual(bridge.board_score(c6), 0)
+        self.assertIn("VID:PID=303A:1001", bridge.port_description(esp32_p4))
+        with patch.object(
+            bridge, "detected_ports", return_value=[adapter, generic_esp, esp32_p4]
+        ):
             self.assertEqual(bridge.choose_port("auto"), esp32_p4.device)
-        with patch.object(bridge, "detected_ports", return_value=[uno, esp32_p4]):
+        second_p4 = fake_port(
+            "/dev/cu.usbmodem2201", "JC4880P443C-I-W ESP32-P4"
+        )
+        with patch.object(bridge, "detected_ports", return_value=[second_p4, esp32_p4]):
             with self.assertRaisesRegex(SystemExit, "will not guess"):
                 bridge.choose_port("auto")
 
-    def test_windows_com_ports_are_discovered(self) -> None:
-        com = fake_port("COM4", "Arduino UNO")
-        unix = fake_port("/dev/cu.usbmodem1", "Arduino UNO")
-        with patch.object(bridge.list_ports, "comports", return_value=[com, unix]), patch.object(bridge.sys, "platform", "win32"):
-            self.assertEqual([port.device for port in bridge.detected_ports()], ["COM4"])
+    def test_auto_port_accepts_single_generic_espressif_candidate(self) -> None:
+        generic = fake_generic_espressif_port("/dev/cu.usbmodem3101")
+        with patch.object(bridge, "detected_ports", return_value=[generic]):
+            self.assertEqual(bridge.choose_port("auto"), generic.device)
+
+    def test_auto_port_rejects_two_generic_espressif_candidates(self) -> None:
+        first = fake_generic_espressif_port("/dev/cu.usbmodem3101")
+        second = fake_generic_espressif_port("/dev/cu.usbmodem4101")
+        with patch.object(bridge, "detected_ports", return_value=[first, second]):
+            with self.assertRaisesRegex(SystemExit, "will not guess"):
+                bridge.choose_port("auto")
+
+    def test_auto_port_excludes_generic_usb_serial_adapter(self) -> None:
+        adapter = fake_port("/dev/cu.usbserial-1", "USB Serial")
+        adapter.manufacturer = "FTDI"
+        with patch.object(bridge, "detected_ports", return_value=[adapter]):
+            with self.assertRaisesRegex(SystemExit, "No identifiable"):
+                bridge.choose_port("auto")
+
+    def test_only_macos_outbound_serial_ports_are_discovered(self) -> None:
+        callout = fake_port("/dev/cu.usbmodem2101", "ESP32-P4")
+        inbound = fake_port("/dev/tty.usbmodem2101", "ESP32-P4")
+        with patch.object(bridge.list_ports, "comports", return_value=[inbound, callout]):
+            self.assertEqual(
+                [port.device for port in bridge.detected_ports()], [callout.device]
+            )
 
     def test_stdin_states_ignores_blank_lines(self) -> None:
         with patch.object(bridge.sys, "stdin", io.StringIO("\nrunning\n  \nidle\n")):
@@ -330,14 +365,12 @@ class FakeBoard:
 
 
 class DaemonPortTests(unittest.TestCase):
-    def test_explicit_windows_port_does_not_require_a_filesystem_node(self) -> None:
-        with patch.object(daemon.sys, "platform", "win32"):
-            self.assertEqual(daemon.choose_port("COM7"), "COM7")
-
-    def test_auto_port_requires_one_unambiguous_arduino(self) -> None:
-        first = fake_port("/dev/cu.usbmodem1", "Arduino UNO")
-        second = fake_port("/dev/cu.usbmodem2", "Arduino UNO")
-        p4 = fake_port("/dev/cu.usbmodem2101", "ESP32-P4 USB JTAG/serial debug unit")
+    def test_auto_port_requires_one_unambiguous_p4(self) -> None:
+        first = fake_port(
+            "/dev/cu.usbmodem2101", "ESP32-P4 USB JTAG/serial debug unit"
+        )
+        second = fake_port("/dev/cu.usbmodem2201", "JC4880P443C-I-W ESP32-P4")
+        unsupported = fake_port("/dev/cu.usbmodem1", "ESP32-C6 USB JTAG")
         adapter = fake_port("/dev/cu.usbserial-1", "USB Serial")
 
         with patch.object(daemon, "detected_ports", return_value=[first]):
@@ -346,7 +379,27 @@ class DaemonPortTests(unittest.TestCase):
             self.assertIsNone(daemon.choose_port("auto"))
         with patch.object(daemon, "detected_ports", return_value=[first, second]):
             self.assertIsNone(daemon.choose_port("auto"))
-        with patch.object(daemon, "detected_ports", return_value=[first, p4]):
+        with patch.object(daemon, "detected_ports", return_value=[unsupported, first]):
+            self.assertEqual(daemon.choose_port("auto"), first.device)
+        generic = fake_generic_espressif_port("/dev/cu.usbmodem3101")
+        with patch.object(daemon, "detected_ports", return_value=[generic, first]):
+            self.assertEqual(daemon.choose_port("auto"), first.device)
+
+    def test_auto_port_accepts_single_generic_espressif_candidate(self) -> None:
+        generic = fake_generic_espressif_port("/dev/cu.usbmodem3101")
+        with patch.object(daemon, "detected_ports", return_value=[generic]):
+            self.assertEqual(daemon.choose_port("auto"), generic.device)
+
+    def test_auto_port_rejects_two_generic_espressif_candidates(self) -> None:
+        first = fake_generic_espressif_port("/dev/cu.usbmodem3101")
+        second = fake_generic_espressif_port("/dev/cu.usbmodem4101")
+        with patch.object(daemon, "detected_ports", return_value=[first, second]):
+            self.assertIsNone(daemon.choose_port("auto"))
+
+    def test_auto_port_excludes_generic_usb_serial_adapter(self) -> None:
+        adapter = fake_port("/dev/cu.usbserial-1", "USB Serial")
+        adapter.manufacturer = "FTDI"
+        with patch.object(daemon, "detected_ports", return_value=[adapter]):
             self.assertIsNone(daemon.choose_port("auto"))
 
     def test_missing_port_warning_is_throttled(self) -> None:
@@ -355,13 +408,15 @@ class DaemonPortTests(unittest.TestCase):
         self.assertTrue(daemon.should_warn_port(30.0, 30.0))
 
 
-class ArduinoLinkTests(unittest.TestCase):
+class P4LinkTests(unittest.TestCase):
     def test_constructor_handshake_and_state_protocol(self) -> None:
-        board = FakeBoard([b"boot message\n", b"pong\n", b"ERR unknown\n"])
+        board = FakeBoard(
+            [b"boot message\n", b"pong\n", b"CAPABILITIES clock weather usage\n"]
+        )
         with patch.object(daemon.serial, "Serial", return_value=board), patch.object(
             daemon.time, "sleep"
         ):
-            link = daemon.ArduinoLink("/dev/cu.test", 9600)
+            link = daemon.P4Link("/dev/cu.test", 9600)
 
         board.replies.append(b"OK RUNNING\n")
         link.send_state("running")
@@ -373,7 +428,7 @@ class ArduinoLinkTests(unittest.TestCase):
         self.assertEqual(board.flush_count, 3)
         self.assertEqual(board.reset_count, 1)
         self.assertTrue(board.closed)
-        self.assertEqual(link.capabilities, set())
+        self.assertEqual(link.capabilities, {"clock", "weather", "usage"})
 
     def test_capability_probe_enables_only_known_v2_features(self) -> None:
         board = FakeBoard(
@@ -382,13 +437,13 @@ class ArduinoLinkTests(unittest.TestCase):
         with patch.object(daemon.serial, "Serial", return_value=board), patch.object(
             daemon.time, "sleep"
         ):
-            link = daemon.ArduinoLink("/dev/cu.test")
+            link = daemon.P4Link("/dev/cu.test")
 
         self.assertEqual(link.capabilities, {"clock", "usage", "weather"})
         self.assertEqual(board.writes, [b"ping\n", b"capabilities\n"])
 
     def test_capability_timeout_is_retryable_transport_failure(self) -> None:
-        link = daemon.ArduinoLink.__new__(daemon.ArduinoLink)
+        link = daemon.P4Link.__new__(daemon.P4Link)
         link.board = FakeBoard()
         with patch.object(
             daemon.time, "monotonic", side_effect=[0.0, 0.1, 0.5]
@@ -396,11 +451,20 @@ class ArduinoLinkTests(unittest.TestCase):
             link._probe_capabilities(0.5)
         self.assertEqual(link.board.writes, [b"capabilities\n"])
 
+    def test_capability_rejection_does_not_fall_back_to_legacy_mode(self) -> None:
+        link = daemon.P4Link.__new__(daemon.P4Link)
+        link.board = FakeBoard([b"ERR unknown\n"])
+        with patch.object(
+            daemon.time, "monotonic", side_effect=[0.0, 0.1]
+        ), self.assertRaisesRegex(OSError, "rejected capability probe"):
+            link._probe_capabilities(0.5)
+        self.assertEqual(link.board.writes, [b"capabilities\n"])
+
     def test_clock_weather_and_usage_require_exact_ack_and_exact_writes(self) -> None:
         snapshot = daemon.WeatherSnapshot(
             29.5, 27.0, 32.0, 82, "rain", 1_722_730_800
         )
-        link = daemon.ArduinoLink.__new__(daemon.ArduinoLink)
+        link = daemon.P4Link.__new__(daemon.P4Link)
         usage_snapshot = daemon.UsageSnapshot(100, 200, 50, 150, 1_722_730_800)
         link.board = FakeBoard([b"OK CLOCK\n", b"OK WEATHER\n", b"OK USAGE\n"])
 
@@ -425,7 +489,7 @@ class ArduinoLinkTests(unittest.TestCase):
             daemon.WeatherSnapshot(29, 27, 32, 82, "rain later", 1),
             daemon.WeatherSnapshot(29, 27, 32, 82, "rain", -1),
         )
-        link = daemon.ArduinoLink.__new__(daemon.ArduinoLink)
+        link = daemon.P4Link.__new__(daemon.P4Link)
         link.board = FakeBoard()
         with self.assertRaises(ValueError):
             link.send_clock(1.5, 28_800)
@@ -446,13 +510,13 @@ class ArduinoLinkTests(unittest.TestCase):
             daemon.time, "monotonic", side_effect=[0.0, 0.1, 2.1]
         ):
             with self.assertRaisesRegex(OSError, "did not acknowledge"):
-                daemon.ArduinoLink("/dev/cu.test")
+                daemon.P4Link("/dev/cu.test")
 
         self.assertEqual(board.writes, [b"ping\n"])
         self.assertTrue(board.closed)
 
     def test_invalid_state_is_rejected_without_writing(self) -> None:
-        link = daemon.ArduinoLink.__new__(daemon.ArduinoLink)
+        link = daemon.P4Link.__new__(daemon.P4Link)
         link.board = FakeBoard()
         with self.assertRaisesRegex(ValueError, "invalid state"):
             link.send_state("sleeping")
@@ -461,7 +525,7 @@ class ArduinoLinkTests(unittest.TestCase):
     def test_exchange_reports_unexpected_replies(self) -> None:
         for reply in (b"ERR unknown\n", b"pong extra\n"):
             with self.subTest(reply=reply):
-                link = daemon.ArduinoLink.__new__(daemon.ArduinoLink)
+                link = daemon.P4Link.__new__(daemon.P4Link)
                 link.board = FakeBoard([reply])
                 with patch.object(
                     daemon.time, "monotonic", side_effect=[0.0, 0.1, 2.1]
@@ -472,7 +536,7 @@ class ArduinoLinkTests(unittest.TestCase):
                         link._exchange("ping", "pong")
 
     def test_close_error_does_not_mask_serial_recovery(self) -> None:
-        link = daemon.ArduinoLink.__new__(daemon.ArduinoLink)
+        link = daemon.P4Link.__new__(daemon.P4Link)
         link.board = FakeBoard(close_error=OSError("device disappeared"))
         daemon._close_quietly(link)
 
@@ -720,38 +784,6 @@ class WeatherSyncTests(unittest.TestCase):
             self.assertEqual(stop.delays, [900.0])
             fetcher.assert_called_once_with(3.0)
 
-    def test_once_with_legacy_link_sends_only_lifecycle(self) -> None:
-        link = unittest.mock.Mock()
-        link.capabilities = set()
-        with tempfile.TemporaryDirectory() as temporary:
-            state_dir = Path(temporary) / "sessions"
-            state_dir.mkdir()
-            write_record(state_dir / "active.json", "running", daemon.time.time())
-            with patch.object(
-                daemon.sys,
-                "argv",
-                [
-                    "codex_pet_daemon.py",
-                    "--state-dir",
-                    str(state_dir),
-                    "--port",
-                    "/dev/cu.test",
-                    "--once",
-                ],
-            ), patch.object(daemon, "choose_port", return_value="/dev/cu.test"), patch.object(
-                daemon, "ArduinoLink", return_value=link
-            ), patch.object(daemon, "WeatherWorker") as worker_class, patch.object(
-                daemon.signal, "signal"
-            ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                self.assertEqual(daemon.main(), 0)
-
-        link.send_state.assert_called_once_with("running")
-        link.send_clock.assert_not_called()
-        link.send_weather.assert_not_called()
-        link.send_usage.assert_not_called()
-        worker_class.assert_not_called()
-        link.close.assert_called_once_with()
-
     def test_once_with_usage_capability_refreshes_and_sends_aggregate(self) -> None:
         snapshot = daemon.UsageSnapshot(100, 200, 50, 150, 1_722_730_800)
         link = unittest.mock.Mock()
@@ -774,7 +806,7 @@ class WeatherSyncTests(unittest.TestCase):
                 "--once",
             ],
         ), patch.object(daemon, "choose_port", return_value="/dev/cu.test"), patch.object(
-            daemon, "ArduinoLink", return_value=link
+            daemon, "P4Link", return_value=link
         ), patch.object(
             daemon, "UsageWorker", return_value=worker
         ) as worker_class, patch.object(
@@ -806,7 +838,7 @@ class WeatherSyncTests(unittest.TestCase):
                 "--once",
             ],
         ), patch.object(daemon, "choose_port", return_value="/dev/cu.test"), patch.object(
-            daemon, "ArduinoLink", return_value=link
+            daemon, "P4Link", return_value=link
         ), patch.object(daemon, "UsageWorker") as worker_class, patch.object(
             daemon.signal, "signal"
         ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
@@ -835,7 +867,7 @@ class WeatherSyncTests(unittest.TestCase):
                 "--once",
             ],
         ), patch.object(daemon, "choose_port", return_value="/dev/cu.test"), patch.object(
-            daemon, "ArduinoLink", return_value=link
+            daemon, "P4Link", return_value=link
         ), patch.object(
             daemon, "WeatherWorker", return_value=worker
         ), patch.object(
@@ -876,7 +908,7 @@ class WeatherSyncTests(unittest.TestCase):
                 "--once",
             ],
         ), patch.object(daemon, "choose_port", return_value="/dev/cu.test"), patch.object(
-            daemon, "ArduinoLink", return_value=link
+            daemon, "P4Link", return_value=link
         ), patch.object(daemon, "WeatherWorker", return_value=worker), patch.object(
             daemon.signal, "signal"
         ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as stderr:

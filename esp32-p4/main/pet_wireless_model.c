@@ -4,7 +4,15 @@
 
 static size_t bounded_length(const char *value, size_t maximum)
 {
-    return value == NULL ? 0U : strnlen(value, maximum + 1U);
+    if (value == NULL) {
+        return 0U;
+    }
+
+    size_t length = 0U;
+    while (length <= maximum && value[length] != '\0') {
+        ++length;
+    }
+    return length;
 }
 
 bool pet_wireless_credentials_valid(const char *ssid, const char *password)

@@ -29,11 +29,6 @@ def default_state_dir() -> Path:
     override = os.environ.get("CODEX_PET_STATE_DIR")
     if override:
         return Path(override).expanduser()
-    if sys.platform == "win32":
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if local_app_data:
-            return Path(local_app_data) / "CodexPet" / "sessions"
-        return Path.home() / "AppData" / "Local" / "CodexPet" / "sessions"
     return Path.home() / "Library" / "Application Support" / "CodexPet" / "sessions"
 
 

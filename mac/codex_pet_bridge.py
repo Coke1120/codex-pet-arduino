@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-platform Serial bridge for Codex Pet boards.
+"""macOS Serial bridge for the ESP32-P4 Codex Pet board.
 
 Examples:
   python3 codex_pet_bridge.py --list
@@ -39,14 +39,9 @@ def port_description(port: ListPortInfo) -> str:
 
 
 def detected_ports() -> List[ListPortInfo]:
-    """Return pyserial port records for outbound macOS or Windows devices."""
-    def supported(device: str) -> bool:
-        if sys.platform == "win32":
-            return device.upper().startswith("COM")
-        return device.startswith("/dev/cu.")
-
+    """Return outbound macOS serial devices."""
     return sorted(
-        (p for p in list_ports.comports() if supported(p.device)),
+        (p for p in list_ports.comports() if p.device.startswith("/dev/cu.")),
         key=lambda p: p.device,
     )
 
@@ -57,23 +52,18 @@ def board_score(port: ListPortInfo) -> int:
         str(value or "")
         for value in (port.description, port.manufacturer, port.product, port.interface)
     ).lower()
-    score = 0
-    if "arduino" in text:
-        score += 100
-    if "uno" in text:
-        score += 50
+    if "esp32-c6" in text or "esp32c6" in text:
+        return 0
     if "esp32-p4" in text or "esp32p4" in text or "jc4880p443c" in text:
-        score += 150
-    if port.device.startswith("/dev/cu.usbmodem"):
-        score += 10
-    if port.device.upper().startswith("COM") and port.vid is not None:
-        score += 10
-    return score
-
-
-# Kept as an API alias for existing wrappers and tests.
-def arduino_score(port: ListPortInfo) -> int:
-    return board_score(port)
+        return 150
+    is_espressif = port.vid == 0x303A or "espressif" in text
+    if (
+        is_espressif
+        and port.device.startswith("/dev/cu.usbmodem")
+        and "usb jtag/serial debug unit" in text
+    ):
+        return 10
+    return 0
 
 
 def choose_port(requested: str) -> str:
@@ -81,20 +71,23 @@ def choose_port(requested: str) -> str:
         return requested
 
     ports = detected_ports()
-    plausible = [p for p in ports if board_score(p) > 0]
+    scored = [(board_score(port), port) for port in ports]
+    plausible = [(score, port) for score, port in scored if score > 0]
     if not plausible:
         raise SystemExit(
             "No identifiable Codex Pet board serial port found. Reconnect the board, "
             "inspect the port list, then choose the verified port with --port."
         )
-    if len(plausible) != 1:
-        joined = "\n  ".join(port_description(p) for p in plausible)
+    strongest_score = max(score for score, _port in plausible)
+    strongest = [port for score, port in plausible if score == strongest_score]
+    if len(strongest) != 1:
+        joined = "\n  ".join(port_description(port) for port in strongest)
         raise SystemExit(
             "More than one supported Codex Pet board was found; auto mode will "
             "not guess. Verify the intended device and choose it with --port:\n  "
             + joined
         )
-    return plausible[0].device
+    return strongest[0].device
 
 
 def normalise_state(raw: str) -> str:
@@ -126,7 +119,7 @@ def exchange(
         else:
             time.sleep(0.01)
     raise OSError(
-        "Arduino did not acknowledge {!r}; received {}".format(command, received)
+        "ESP32-P4 did not acknowledge {!r}; received {}".format(command, received)
     )
 
 
@@ -164,7 +157,7 @@ def main() -> int:
     port = choose_port(args.port)
     print("Opening {} at {} baud...".format(port, args.baud))
 
-    # Opening the port usually resets an Uno. Wait for its bootloader/setup.
+    # Opening the USB serial port resets the ESP32-P4; allow it to boot.
     try:
         board = serial.Serial(port, args.baud, timeout=0.08, write_timeout=1.0)
     except (OSError, serial.SerialException) as exc:

@@ -5,7 +5,6 @@ import argparse
 import json
 import os
 import shlex
-import subprocess
 from pathlib import Path
 from typing import Any, Dict
 
@@ -17,8 +16,7 @@ EVENTS = (
 
 
 def command_string(python: str, hook: Path) -> str:
-    args = [python, str(hook)]
-    return subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
+    return shlex.join([python, str(hook)])
 
 
 def install(destination: Path, python: str, hook: Path) -> None:

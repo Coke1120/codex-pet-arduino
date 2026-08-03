@@ -1,6 +1,9 @@
 # Direct Codex Desktop and CLI synchronization
 
-The Python hook and Serial daemon support both macOS and Windows. This page covers the shared design and macOS service setup; Windows users should follow [`WINDOWS.md`](WINDOWS.md). ESP32-P4 boards additionally negotiate clock, Hong Kong weather, and local Codex usage sync; legacy Uno boards remain lifecycle-only.
+The Python hook and Serial daemon connect Codex on macOS to the
+JC4880P443C-I-W over USB Serial. The ESP32-P4 negotiates lifecycle, clock, Hong
+Kong weather, and local Codex Usage synchronization before the daemon starts
+optional data workers.
 
 The basic `codex_pet_bridge.py` is intentionally manual: it sends only the state supplied through `--state`, `--interactive`, or `--stdin`. It does not inspect Codex Desktop automatically.
 
@@ -41,7 +44,7 @@ It does **not** store prompts, assistant messages, tool output, transcript paths
 ## Codex Usage data
 
 By default, the daemon reads Codex's local session files under
-`~/.codex/sessions` on macOS and Windows. It accepts only JSONL `event_msg`
+`~/.codex/sessions` on macOS. It accepts only JSONL `event_msg`
 records whose payload type is `token_count`, then sends these five integers to a
 P4 that advertises the `usage` capability:
 
@@ -61,17 +64,12 @@ the aggregate at most once per minute and preserves the last good cache if a
 session file is temporarily unreadable. The P4 marks the display aging after
 five minutes and stale after 30 minutes. An empty or missing sessions directory
 produces zero aggregates rather than guessing account usage. The default cache
-is `~/Library/Application Support/CodexPet/usage-cache.json` on macOS and
-`%LOCALAPPDATA%\CodexPet\usage-cache.json` on Windows.
-
-On Windows, lifecycle hook state records use
-`%LOCALAPPDATA%\CodexPet\sessions`. The same bridge discovers Windows `COM`
-ports instead of macOS `/dev/cu.*` devices.
+is `~/Library/Application Support/CodexPet/usage-cache.json`.
 
 ## 1. Install Python dependency
 
 ```bash
-cd /path/to/codex-pet-arduino/mac
+cd /path/to/codex-pet-dev-board/mac
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
@@ -94,7 +92,9 @@ Run the persistent bridge manually:
 .venv/bin/python codex_pet_daemon.py --port auto
 ```
 
-If more than one plausible board is attached, identify the Uno with `arduino-cli board list`, then pass its exact `/dev/cu.*` path or Windows `COM` name using `--port`.
+If more than one plausible Espressif device is attached, compare the macOS port
+list before and after reconnecting the P4 native USB connector, confirm the chip,
+then pass its exact `/dev/cu.*` path using `--port`.
 The daemon re-sends the selected state every five seconds by default so a board reset cannot silently desynchronize the display. Use `--heartbeat SECONDS` to choose another positive interval. On a P4 that advertises `clock`, `weather`, and `usage`, it also sends local time once per minute, fetches Hong Kong weather in a background thread every 15 minutes, and reads local token aggregates at most once per minute. Each worker starts only after capability negotiation and never during `--dry-run`. Use `--no-weather` to disable network weather retrieval or `--no-usage` to disable local session scanning. Use `--sessions-root PATH` when Codex stores session JSONL files somewhere other than `~/.codex/sessions`:
 
 ```bash
@@ -103,14 +103,18 @@ The daemon re-sends the selected state every five seconds by default so a board 
   --sessions-root /path/to/codex/sessions
 ```
 
-Explicit legacy rejection keeps the connection lifecycle-only; a capability
-timeout is retried instead of silently downgrading a v2 board. Weather and usage
+An incomplete capability response is retried instead of silently downgrading the
+v2 board. Weather and usage
 failures retain their last good caches and are reported once per distinct error
 until a successful refresh.
 
 ## 3. Configure Codex hooks
 
-Codex loads user hooks from `~/.codex/hooks.json`. Start from [`examples/codex-hooks.json`](../examples/codex-hooks.json), replace every `/ABSOLUTE/PATH/TO/codex-pet-arduino` with the real repository path, and merge its event groups into any existing `~/.codex/hooks.json` rather than overwriting unrelated hooks.
+Codex loads user hooks from `~/.codex/hooks.json`. Start from
+[`examples/codex-hooks.json`](../examples/codex-hooks.json), replace every
+`/ABSOLUTE/PATH/TO/codex-pet-dev-board` with the real repository path, and merge
+its event groups into any existing `~/.codex/hooks.json` rather than overwriting
+unrelated hooks.
 
 After installing the macOS runtime in step 4, the hook commands may instead
 point to `~/Library/Application Support/CodexPet/runtime/codex_pet_hook.py`;
@@ -130,7 +134,7 @@ environment, copies the usage reader with the daemon, and loads
 `com.coke1120.codex-pet` as a per-user LaunchAgent:
 
 ```bash
-cd /path/to/codex-pet-arduino
+cd /path/to/codex-pet-dev-board
 bash mac/install.sh
 ```
 
@@ -144,7 +148,7 @@ own the Serial port. The installed LaunchAgent uses the default
 `~/.codex/sessions` root and enables usage collection when the P4 advertises it;
 `--no-usage` and `--sessions-root` are manual daemon options, not installer
 flags. The daemon connection log identifies `clock, usage, weather` after a
-successful P4 capability handshake, or `lifecycle-only` for a legacy board.
+successful P4 capability handshake.
 
 To remove it:
 
@@ -158,7 +162,7 @@ Logs are written beside the runtime under
 
 ## Verification
 
-With the daemon running and Arduino connected:
+With the daemon running and the JC4880P443C-I-W connected:
 
 1. Open or resume a Codex conversation: `idle`.
 2. Submit a prompt: `running`.

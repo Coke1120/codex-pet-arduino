@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persistent cross-platform Codex lifecycle and board Serial bridge."""
+"""Persistent macOS Codex lifecycle and ESP32-P4 Serial bridge."""
 
 import argparse
 import json
@@ -317,22 +317,12 @@ def default_state_dir() -> Path:
     override = os.environ.get("CODEX_PET_STATE_DIR")
     if override:
         return Path(override).expanduser()
-    if sys.platform == "win32":
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if local_app_data:
-            return Path(local_app_data) / "CodexPet" / "sessions"
-        return Path.home() / "AppData" / "Local" / "CodexPet" / "sessions"
     return Path.home() / "Library" / "Application Support" / "CodexPet" / "sessions"
 
 
 def detected_ports() -> List[ListPortInfo]:
-    def supported(device: str) -> bool:
-        if sys.platform == "win32":
-            return device.upper().startswith("COM")
-        return device.startswith("/dev/cu.")
-
     return sorted(
-        (p for p in list_ports.comports() if supported(p.device)),
+        (p for p in list_ports.comports() if p.device.startswith("/dev/cu.")),
         key=lambda p: p.device,
     )
 
@@ -342,33 +332,30 @@ def board_score(port: ListPortInfo) -> int:
         str(value or "")
         for value in (port.description, port.manufacturer, port.product, port.interface)
     ).lower()
-    score = 0
-    if "arduino" in text:
-        score += 100
-    if "uno" in text:
-        score += 50
+    if "esp32-c6" in text or "esp32c6" in text:
+        return 0
     if "esp32-p4" in text or "esp32p4" in text or "jc4880p443c" in text:
-        score += 150
-    if port.device.startswith("/dev/cu.usbmodem"):
-        score += 10
-    if port.device.upper().startswith("COM") and port.vid is not None:
-        score += 10
-    return score
-
-
-def arduino_score(port: ListPortInfo) -> int:
-    return board_score(port)
+        return 150
+    is_espressif = port.vid == 0x303A or "espressif" in text
+    if (
+        is_espressif
+        and port.device.startswith("/dev/cu.usbmodem")
+        and "usb jtag/serial debug unit" in text
+    ):
+        return 10
+    return 0
 
 
 def choose_port(requested: str) -> Optional[str]:
     if requested != "auto":
-        if sys.platform == "win32":
-            return requested if requested.upper().startswith("COM") else None
         return requested if Path(requested).exists() else None
-    candidates = [p for p in detected_ports() if board_score(p) > 0]
+    scored = [(board_score(port), port) for port in detected_ports()]
+    candidates = [(score, port) for score, port in scored if score > 0]
     if not candidates:
         return None
-    return candidates[0].device if len(candidates) == 1 else None
+    strongest_score = max(score for score, _port in candidates)
+    strongest = [port for score, port in candidates if score == strongest_score]
+    return strongest[0].device if len(strongest) == 1 else None
 
 
 def _file_identity(path: Path) -> Optional[Tuple[int, int, int, int]]:
@@ -442,7 +429,7 @@ def should_warn_port(now: float, next_warning_at: float) -> bool:
     return now >= next_warning_at
 
 
-class ArduinoLink:
+class P4Link:
     def __init__(
         self, port: str, baud: int = 115200, capability_timeout: float = 0.5
     ) -> None:
@@ -477,7 +464,7 @@ class ArduinoLink:
             if line == expected:
                 return line
         raise OSError(
-            "Arduino did not acknowledge {!r}; received {}".format(command, received)
+            "ESP32-P4 did not acknowledge {!r}; received {}".format(command, received)
         )
 
     def _probe_capabilities(self, timeout: float) -> Set[str]:
@@ -491,10 +478,18 @@ class ArduinoLink:
                 continue
             received.append(line)
             if line.upper().startswith("ERR"):
-                return set()
+                raise OSError(
+                    "ESP32-P4 rejected capability probe; received {}".format(received)
+                )
             capabilities = parse_capabilities(line)
-            if capabilities or line.lower() in ("capabilities", "ok capabilities"):
+            if capabilities:
                 return capabilities
+            if line.lower().startswith(("capabilities", "ok capabilities")):
+                raise OSError(
+                    "ESP32-P4 reported no supported capabilities; received {}".format(
+                        received
+                    )
+                )
         raise OSError(
             "Codex Pet capability probe timed out; received {}".format(received)
         )
@@ -514,7 +509,7 @@ class ArduinoLink:
         self._exchange(build_usage_command(snapshot), "OK USAGE")
 
 
-def _close_quietly(link: ArduinoLink) -> None:
+def _close_quietly(link: P4Link) -> None:
     try:
         link.close()
     except (OSError, serial.SerialException):
@@ -558,7 +553,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
 
-    link: Optional[ArduinoLink] = None
+    link: Optional[P4Link] = None
     desired: Optional[str] = None
     sent: Optional[str] = None
     next_connect_at = 0.0
@@ -590,7 +585,7 @@ def main() -> int:
             selected = choose_port(args.port)
             if selected:
                 try:
-                    link = ArduinoLink(selected, args.baud)
+                    link = P4Link(selected, args.baud)
                     sent = None
                     next_heartbeat_at = 0.0
                     next_clock_at = 0.0
@@ -620,8 +615,6 @@ def main() -> int:
                         )
                         reported_usage_error = None
                     negotiated = ", ".join(sorted(link.capabilities))
-                    if not negotiated:
-                        negotiated = "lifecycle-only"
                     print(
                         "Connected to {} [{}]".format(selected, negotiated),
                         flush=True,
@@ -634,8 +627,8 @@ def main() -> int:
                 now = time.monotonic()
                 if should_warn_port(now, next_port_warning_at):
                     print(
-                        "No unique Arduino port found; reconnect or set --port "
-                        "after arduino-cli board list",
+                        "No unique ESP32-P4 serial port found; reconnect the board "
+                        "or set --port to its /dev/cu.* device",
                         file=sys.stderr,
                     )
                     next_port_warning_at = now + PORT_WARNING_INTERVAL

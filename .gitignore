@@ -7,18 +7,16 @@ __pycache__/
 .venv/
 venv/
 
-# Arduino build output
+# Build output
 build/
 *.hex
 *.elf
+pet_generated.h
 
 # Editors
 .vscode/
 .idea/
 *.swp
-
-# Local generated pet artwork (create with tools/convert_codex_pet.py)
-arduino/CodexPet/pet_generated.h
 
 # Local serial logs and environment files
 *.log

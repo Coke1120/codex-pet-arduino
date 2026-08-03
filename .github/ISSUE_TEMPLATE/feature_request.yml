@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest a new animation, integration, or hardware improvement
+description: Suggest a JC4880P443C-I-W or macOS companion improvement
 title: "[Feature]: "
 labels: [enhancement]
 body:
@@ -14,11 +14,13 @@ body:
     id: proposal
     attributes:
       label: Proposed solution
-      description: Describe the state, protocol, animation, or hardware change.
+      description: Describe the state, protocol, v2 action, touch UI, macOS integration, or hardware change.
     validations:
       required: true
   - type: textarea
     id: constraints
     attributes:
-      label: Uno memory and compatibility considerations
-      description: Mention flash, SRAM, display, wiring, or platform trade-offs where relevant.
+      label: P4 and macOS scope considerations
+      description: Mention flash, PSRAM, timing, display, touch, radio, privacy, or macOS trade-offs. Requests for other boards or host operating systems are out of scope.
+    validations:
+      required: true

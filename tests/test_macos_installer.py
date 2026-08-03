@@ -1,7 +1,6 @@
 import os
 import plistlib
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +10,6 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "mac" / "install.sh"
 
 
-@unittest.skipIf(sys.platform == "win32", "the macOS installer is a Bash script")
 class MacInstallerTests(unittest.TestCase):
     def run_installer(
         self,

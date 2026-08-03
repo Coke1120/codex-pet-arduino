@@ -1,355 +1,217 @@
 # Codex Pet MCU Desk Companion
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Arduino Uno](https://img.shields.io/badge/board-Arduino%20Uno-00979D?logo=arduino&logoColor=white)](https://docs.arduino.cc/hardware/uno-rev3/)
-[![Display](https://img.shields.io/badge/display-ST7735%20128%C3%97160-5C2D91)](https://github.com/Bodmer/TFT_eSPI)
-[![Python](https://img.shields.io/badge/bridge-Python%203-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![Hardware](https://img.shields.io/badge/hardware-JC4880P443C--I--W-E7352C)](docs/ESP32_P4.md)
+[![Host](https://img.shields.io/badge/host-macOS-000000?logo=apple&logoColor=white)](docs/CODEX_DESKTOP.md)
 [![CI](https://github.com/Coke1120/codex-pet-dev-board/actions/workflows/ci.yml/badge.svg)](https://github.com/Coke1120/codex-pet-dev-board/actions/workflows/ci.yml)
 
-Two firmware targets share the same Codex Desktop/CLI hooks and backwards-
-compatible USB Serial lifecycle protocol:
+Codex Pet turns the **GUITION JC4880P443C-I-W** into a 480×800 touch desk
+companion for Codex on macOS. The ESP32-P4 drives the display, touch UI, and
+USB Serial protocol. Its onboard ESP32-C6 provides Wi-Fi and Bluetooth Low
+Energy over ESP-Hosted SDIO.
 
-- **Arduino Uno R3 + 1.8-inch ST7735 128×160 TFT** — the original low-memory
-  reference build with compressed pixel-art frames.
-- **GUITION JC4880P443C-I-W + 4.3-inch 480×800 IPS touch display** — an
-  ESP-IDF/LVGL build for the ESP32-P4, with Wi-Fi and Bluetooth Low Energy
-  provided by the onboard ESP32-C6 over SDIO.
+The pet remains the primary interface. It reflects the current Codex lifecycle
+state, reacts to touch, and exposes Today, Settings, and local Codex Usage as
+gesture-driven information layers. The private Codex Pet v2 source atlas stays
+local and is converted into a gitignored firmware asset before building.
 
-Both firmware implementations understand `idle`, `running`, `waiting`, and
-`review`. The Uno build can mirror the selected custom
-Codex pet through a gitignored generated header. The P4 public build uses a small
-red test tile so CI and new users can compile without private artwork; generating
-the gitignored local asset activates all 73 used frames in a Codex Pet v2 8×11
-atlas. The P4 extension capability-negotiates minute clock sync, Hong Kong
-weather, and local Codex token aggregates from the desktop daemon. Its touch UI
-adds Today, Settings, and Codex Usage surfaces without replacing the v2 wave,
-jump, failure, directional-look, waiting, running, and review actions. Legacy
-Uno boards never receive the new commands.
-The underlying P4 board/display route was previously clean-built and flashed on
-the target board. The current P4 firmware has been linked with the full private
-v2 asset, but its selected-pet rendering, wireless path, Serial acknowledgements,
-and touch/state behaviour still require physical acceptance. See
-[`docs/ESP32_P4.md`](docs/ESP32_P4.md).
+This repository maintains one product configuration:
 
-> Search keywords: Arduino desktop pet, Codex Pet, physical AI coding assistant, ST7735 animation, TFT_eSPI Arduino Uno, serial status display, pixel art robot pet, macOS and Windows Arduino bridge.
+| Part | Supported configuration |
+|---|---|
+| Hardware | GUITION JC4880P443C-I-W with ESP32-P4, ESP32-C6, 480×800 ST7701S display, and GT911 touch |
+| Host | macOS with Python 3 and launchd |
+| Firmware | ESP-IDF 5.5.1 and LVGL 9 |
+
+Ubuntu runners are firmware-build infrastructure only; desktop host support
+remains macOS-only. Generic Python or ESP-IDF code that happens to run elsewhere
+is an implementation detail, not a compatibility commitment.
 
 ## Features
 
-- Four backwards-compatible lifecycle states: `idle`, `running`, `waiting`, and `review`
-- Full 73-frame Codex Pet v2 action and look-direction contract on ESP32-P4
-- Thin time/weather bar and pull-down Today Panel on the 480×800 touch target
-- Swipe-left Settings page for Wi-Fi scan/connect and BLE advertising
+- Four Codex lifecycle states: `idle`, `running`, `waiting`, and `review`
+- Complete 73-frame Codex Pet v2 action and look-direction contract
+- Priority-aware wave, jump, failure, waiting, running, review, and touch reactions
+- Thin time/weather bar and pull-down Today panel
+- Hong Kong weather, high/low temperature, rain probability, and stale-data handling
+- Swipe-left Settings page for Wi-Fi and BLE controls
 - Swipe-up Codex Usage page for privacy-limited local token aggregates
-- Tap reactions with cooldown and priority-safe return to the current lifecycle state
-- Capability-gated clock and Hong Kong weather sync with a stale-data fallback
-- ESP32-P4 host plus ESP32-C6 Wi-Fi/BLE co-processor over ESP-Hosted SDIO
-- Large portrait pet view with a compact status strip
-- Real Codex custom-pet frames converted from the selected local atlas
-- 8-colour RLE assets and streaming SPI draws designed for Uno flash/RAM limits
-- USB Serial control at **115200 baud**
-- Compact current-state indicator
-- Manual, one-shot, interactive, and stdin-streaming bridge modes
-- Direct Codex Desktop/CLI lifecycle sync through official Codex hooks
-- Cross-platform host support for macOS `/dev/cu.*` and Windows `COM` ports
-- Conservative Arduino-aware serial-port discovery that avoids generic USB adapters
-- Verified Serial acknowledgements plus periodic state resynchronization after board resets
-- Low-memory design without a full-screen framebuffer
-- Documented `TFT_eSPI` `User_Setup.h` for the supplied wiring
-- Automated Python regression tests and Arduino Uno compilation in GitHub Actions
+- Wi-Fi station scan/connect/forget through the onboard ESP32-C6
+- BLE advertising as `Codex Pet` (BLE only; Classic Bluetooth is not supported)
+- USB Serial lifecycle, clock, weather, and usage synchronization
+- Persistent macOS LaunchAgent with official Codex lifecycle hooks
+- Local-only generated pet artwork excluded from Git
 
-## Demo states
+## Interaction model
 
-| Command | Display behaviour | Suggested meaning |
-|---|---|---|
-| `idle` | Quiet idle loop | Ready or finished |
-| `running` | Active work loop | Coding or executing |
-| `waiting` | Expectant loop | Waiting for user input |
-| `review` | Focused review loop | Reviewing code or tests |
+| Gesture | Result |
+|---|---|
+| Drag down from the top edge | Open Today; the pet moves below the card and looks up |
+| Swipe left | Open Settings |
+| Swipe up | Open Codex Usage |
+| Tap the pet | Play a cooldown-limited random reaction, then return to the current lifecycle state |
+| Tap the status card | Cycle lifecycle states for hardware testing |
 
-Additional shared diagnostic commands are `ping` and `status`. The P4 reports
-its optional v2 extensions through `capabilities` before the daemon sends clock
-or weather and usage data.
+Today closes with an upward swipe. Settings closes with a right swipe or Back.
+Usage closes with a downward swipe or Back.
 
-## Firmware targets
-
-| Target | Framework | Display | Firmware path |
-|---|---|---|---|
-| Arduino Uno R3 | Arduino + TFT_eSPI 2.5.43 | ST7735S SPI, 128×160 | `arduino/CodexPet/` |
-| GUITION JC4880P443C-I-W | ESP-IDF 5.5.1 + LVGL 9 | ST7701S MIPI-DSI + GT911, 480×800 | `esp32-p4/` |
-
-The ESP32-P4 build uses `esp_wifi_remote` and ESP-Hosted to run Wi-Fi and BLE on
-the onboard ESP32-C6. It supports Wi-Fi station scanning/connection and BLE
-advertising as `Codex Pet`; the C6 does not provide Classic Bluetooth in this
-configuration. Codex lifecycle, clock, weather, and usage synchronization stays
-local over USB Serial. The enclosed camera is not initialized by this firmware;
-its inactivity remains part of the physical acceptance checklist.
-See [`docs/ESP32_P4.md`](docs/ESP32_P4.md) for exact build, flash, and hardware
-verification instructions.
-
-The repository also preserves the model-specific JC4880P443 board source,
-its MIT license, and the Apache-2.0/CC0 common components supplied with the
-JC4880P443C-I-W vendor package under
-[`vendor/jc4880p443c_i_w_bsp/`](vendor/jc4880p443c_i_w_bsp/). It is a provenance
-snapshot with per-file archive hashes; the firmware keeps using the
-commit-pinned BSP that passed the current build and board bring-up checks.
-
-## Hardware
-
-### Arduino Uno reference target
-
-- Arduino Uno R3
-- 1.8-inch ST7735 TFT, 128×160 pixels
-- USB cable for power and Serial data
-- Breadboard wires
-- 2.54 mm headers and, for a permanent build, a 2.54 mm perfboard (about 5 × 7 cm)
-- Optional: a `TXS0108E` or another translator explicitly rated for 5 V/3.3 V push-pull SPI when the TFT logic inputs are not confirmed 5V-compatible
-
-### Wiring
-
-The photographed breakout is marked `Driver IC: ST7735S` and has this physical pin order:
+## Architecture
 
 ```text
-BLK  CS  DC  RST  SDA  SCL  VDD  GND
+Codex hooks ──▶ mac/codex_pet_hook.py ─┐
+                                        ├─▶ codex_pet_daemon.py ──USB Serial──▶ ESP32-P4
+Local session token_count events ───────┘                                      │
+                                                                               ├─▶ LVGL UI + v2 pet actions
+Open-Meteo weather ─────────────────────────────────────────────────────────────┤
+                                                                               └─SDIO──▶ ESP32-C6 Wi-Fi/BLE
 ```
 
-The photographed module used for the current working prototype has been user-confirmed as 5V-compatible, so the reference wiring can connect it directly to the Uno:
-
-| Arduino Uno R3 | ST7735S | Function |
-|---:|---:|---|
-| D10 | CS | Chip select |
-| D8 | DC | Data/command |
-| D9 | RST | Reset |
-| D11 | SDA | Hardware SPI MOSI |
-| D13 | SCL | Hardware SPI clock |
-| 5V | VDD | Module power |
-| 3.3V | BLK | Backlight supply for the verified module |
-| GND | GND | Common ground |
-
-Keep `SDA` and `SCL` short. The project starts at an 8 MHz SPI clock; reduce `SPI_FREQUENCY` in `config/User_Setup.h` to 4 MHz if long prototype wiring produces noise.
-
-> [!CAUTION]
-> A generic bare ST7735S controller is 3.3V logic. Direct Uno wiring is appropriate only for a breakout whose seller documentation or verified hardware confirms 5V-compatible `VDD`, logic inputs, and backlight. If that is not established, use a suitable level translator and 3.3V supply instead. A lit white screen proves only that the backlight has power.
-
-For the full bill of materials, staged power-up checklist, optional translated wiring, perfboard layout, and enclosure guidance, see [`docs/HARDWARE.md`](docs/HARDWARE.md).
-
-![Arduino Uno R3 to ST7735S direct wiring](docs/images/uno-r3-st7735-direct-wiring.svg)
+The Mac sends compact data only. The device advances its own clock between
+minute syncs, keeps the last weather/usage values when refreshes fail, and marks
+old data as stale instead of blanking the UI.
 
 ## Repository layout
 
 ```text
-arduino/CodexPet/CodexPet.ino          Arduino Uno firmware
-arduino/CodexPet/pet_demo_rle.h        Original MIT-licensed fallback mascot
-arduino/CodexPet/pet_generated.h       Optional local generated pet (gitignored)
-esp32-p4/                               ESP-IDF firmware for JC4880P443C-I-W
-config/User_Setup.h                     Uno TFT_eSPI display and pin configuration
-tools/convert_codex_pet.py              Codex atlas → Uno RLE header converter
-mac/codex_pet_bridge.py                 Cross-platform USB Serial bridge
-mac/codex_pet_hook.py                   Codex lifecycle hook event mapper
-mac/codex_pet_daemon.py                 Persistent event aggregator and Serial bridge
-mac/codex_pet_usage.py                  Local token-count aggregate reader
-mac/install.sh                          macOS runtime/LaunchAgent installer and updater
-mac/requirements.txt                    Python dependency
-windows/install.ps1                     Windows runtime/hooks/startup-task installer
-docs/HARDWARE.md                        Uno wiring, BOM, perfboard, and enclosure guide
-docs/ESP32_P4.md                        ESP32-P4 build, flash, and verification guide
-docs/CODEX_DESKTOP.md                   Direct Codex Desktop/CLI synchronization guide
-docs/WINDOWS.md                         Windows installation and verification guide
+esp32-p4/                         ESP-IDF firmware and locked managed components
+mac/codex_pet_bridge.py           Manual macOS USB Serial bridge
+mac/codex_pet_hook.py             Codex lifecycle hook event mapper
+mac/codex_pet_daemon.py           Persistent lifecycle/data synchronization daemon
+mac/codex_pet_usage.py            Local token-count aggregate reader
+mac/install.sh                    macOS runtime and LaunchAgent installer
+tools/convert_codex_pet_p4.py     Codex Pet v2 atlas converter
+examples/                         Codex hook and LaunchAgent examples
+tests/                            Host, protocol, converter, and interaction tests
+docs/ESP32_P4.md                  Build, flash, protocol, and hardware acceptance guide
+docs/CODEX_DESKTOP.md             macOS Codex synchronization guide
+vendor/jc4880p443c_i_w_bsp/       Licensed vendor BSP provenance snapshot
 ```
 
-## Quick start
+## Requirements
 
-## AI-agent handover prompt
+- macOS
+- GUITION JC4880P443C-I-W and suitable USB cables
+- ESP-IDF 5.5.1
+- Python 3
+- `ffmpeg` when converting a selected Codex Pet v2 atlas
 
-Paste the following prompt into Codex, Hermes, Claude Code, or another local AI coding agent when you want it to install, regenerate, repair, or verify this project:
+The P4 and C6 are separate flash targets. Confirm the detected chip before
+writing either image. See [the hardware guide](docs/ESP32_P4.md) for port
+identification and the physical acceptance checklist.
 
-```text
-Install or maintain the Codex Pet Arduino project from:
-https://github.com/Coke1120/codex-pet-dev-board
+## 1. Generate the selected Codex Pet v2 asset
 
-Work autonomously until the physical pet is working, but preserve unrelated local changes and do not publish private/custom character artwork.
-
-Environment and hardware:
-- Target board: Arduino Uno R3 (`arduino:avr:uno`).
-- Display: 1.8-inch 128x160 ST7735S SPI TFT.
-- Firmware pins: CS=D10, DC=D8, RST=D9, MOSI/SDA=D11, SCK/SCL=D13.
-- First run `arduino-cli board list` and use only the port identified as Arduino UNO.
-- Inspect the exact TFT breakout before wiring. For the verified module, use VDD=5V and BLK=3.3V; direct Uno GPIO is acceptable because its logic inputs were confirmed 5V-compatible. Otherwise use the optional 3.3V + level-translator path in docs/HARDWARE.md. Never infer 5V tolerance from the ST7735S controller name alone.
-
-Selected Codex pet:
-- Read `${CODEX_HOME:-$HOME/.codex}/config.toml` or `~/.codex/config.toml` and find `[desktop].selected-avatar-id`.
-- Resolve that pet under `${CODEX_HOME:-$HOME/.codex}/pets/`.
-- Run `tools/convert_codex_pet.py` against its `spritesheet.webp` to create the gitignored `arduino/CodexPet/pet_generated.h` at 86x94.
-- Do not commit or publish `pet_generated.h` unless redistribution rights are explicit.
-
-Build and host integration:
-- Install TFT_eSPI 2.5.43 and apply `config/User_Setup.h`.
-- Compile the public fallback once without `pet_generated.h`, then compile the local custom build with it present. Report flash and SRAM for both.
-- Upload the local custom build.
-- On macOS, create/use the Python venv under `mac/.venv`; on Windows, use `windows/install.ps1`. Install `mac/requirements.txt`, then run all tests plus syntax checks.
-- Configure or merge Codex hooks from `examples/codex-hooks.json`; do not overwrite unrelated hooks.
-- Install the host runtime: macOS uses `bash mac/install.sh` to update `~/Library/Application Support/CodexPet/runtime` plus its LaunchAgent; Windows uses `%LOCALAPPDATA%\CodexPet\runtime` plus a Scheduled Task. Follow `docs/CODEX_DESKTOP.md` and `docs/WINDOWS.md`.
-
-Verification:
-- Use one persistent Serial session at 115200 baud.
-- Require exact `pong` and `OK IDLE/RUNNING/WAITING/REVIEW` replies.
-- Visually verify a large moving pet, compact status bar, correct orientation/colours, no full-screen blink, and all four states.
-- Confirm the LaunchAgent is running and lifecycle events move running -> review/waiting -> idle.
-- Run: Python tests, Python syntax, both Uno compiles, P4 converter unit tests,
-  `git diff --check`, and secret/absolute-path scans.
-- If asked to publish, review the final diff, keep custom artwork private, commit, push, and watch GitHub Actions to success.
-```
-
-### 1. Install and configure TFT_eSPI
-
-Install [`TFT_eSPI`](https://github.com/Bodmer/TFT_eSPI) **2.5.43** from the Arduino IDE Library Manager. This is the version exercised by the local build and CI checks.
-
-TFT_eSPI keeps controller and pin settings inside the library rather than the sketch. Back up the library's current `User_Setup.h`, then copy this repository's setup into place:
+The public build uses a small test tile so the repository can build without
+redistributing character art. To mirror a compatible pet selected in Codex
+Desktop, generate the private RGB565A8 asset locally:
 
 ```bash
-cp /path/to/Arduino/libraries/TFT_eSPI/User_Setup.h \
-   /path/to/Arduino/libraries/TFT_eSPI/User_Setup.h.backup
-cp config/User_Setup.h \
-   /path/to/Arduino/libraries/TFT_eSPI/User_Setup.h
-```
-
-If the library is shared with other displays, copy the setup to:
-
-```text
-TFT_eSPI/User_Setups/Setup_CodexPet_Uno_ST7735.h
-```
-
-Then select only that file from `TFT_eSPI/User_Setup_Select.h`:
-
-```cpp
-#include <User_Setups/Setup_CodexPet_Uno_ST7735.h>
-```
-
-### 2. Convert your selected Codex pet (optional)
-
-Codex custom pets normally live under `${CODEX_HOME:-$HOME/.codex}/pets/`. Codex Desktop records the active custom pet in `~/.codex/config.toml`, for example:
-
-```toml
-[desktop]
-selected-avatar-id = "custom:sakamata-chloe"
-```
-
-The public repository includes an original MIT-licensed fallback mascot. To build with your own compatible 192×208-cell Codex v2 atlas, generate the gitignored local header:
-
-```bash
-python3 tools/convert_codex_pet.py \
+python3 tools/convert_codex_pet_p4.py \
   --spritesheet "$HOME/.codex/pets/<pet-folder>/spritesheet.webp" \
-  --output arduino/CodexPet/pet_generated.h \
-  --width 86 \
-  --height 94
+  --output esp32-p4/main/pet_generated.c
 ```
 
-Requirements and constraints:
+The converter uses all 73 referenced cells in the v2 8×11 atlas: nine animation
+rows and 16 clockwise look directions. `pet_generated.c` is gitignored. Do not
+commit or publish it unless you own or have explicit permission to redistribute
+the source artwork. Delete the generated file to restore the public test asset.
 
-- `ffmpeg` must be installed.
-- The converter selects two frames from rows `0` (idle), `6` (waiting), `7` (running), and `8` (review).
-- It emits an 8-colour RGB565 palette plus one-byte RLE runs; the Uno streams pixels directly to the TFT and does not allocate a framebuffer.
-- `pet_generated.h` is intentionally gitignored. Keep it private unless you own or have explicit permission to redistribute the source character art.
-- Recompile after conversion and check flash use. Larger dimensions or additional frames can exceed the Uno's usable 32 KB program space.
+## 2. Build and flash the ESP32-P4
 
-The firmware automatically uses `pet_generated.h` when present; otherwise it builds with the original fallback mascot.
+Open an ESP-IDF 5.5.1 shell:
 
-![TFT demo display](docs/images/tft-demo-display.svg)
+```bash
+cd esp32-p4
+idf.py set-target esp32p4
+idf.py build
+idf.py -p /dev/cu.<verified-p4-port> flash monitor
+```
 
-### 3. Upload the firmware
+Exit the monitor with `Ctrl+]`. Expected boot output includes:
 
-1. Open `arduino/CodexPet/CodexPet.ino` in Arduino IDE.
-2. Select **Tools → Board → Arduino Uno**.
-3. Run `arduino-cli board list` (or use the IDE port menu) and select the port actually identified as **Arduino UNO**. Do not assume an unrelated `/dev/cu.usbserial...` adapter is the board.
-4. Click **Verify**, then **Upload**.
-5. Open Serial Monitor at **115200 baud** with newline enabled.
-6. Send `idle`, `running`, `waiting`, or `review`.
+```text
+Codex Pet ESP32-P4 ready
+Board: JC4880P443C-I-W
+Protocol: v2 lifecycle clock weather today-v1 usage-v1 wireless settings-v1
+```
 
-### 4. Install the host bridge
+## 3. Build and flash the ESP32-C6 wireless slave
 
-#### macOS
+Run the P4 build first so ESP-IDF resolves the exact ESP-Hosted version locked
+by the project. Then build the matching C6 image:
+
+```bash
+cd esp32-p4/managed_components/espressif__esp_hosted/slave
+idf.py set-target esp32c6
+idf.py build
+idf.py -p /dev/cu.<verified-c6-port> flash monitor
+```
+
+Verify the chip identity and port before flashing. Mixing host and slave images
+from different ESP-Hosted releases is unsupported.
+
+## 4. Install the macOS host runtime
+
+From the repository root:
+
+```bash
+bash mac/install.sh
+```
+
+The installer maintains an isolated runtime under
+`~/Library/Application Support/CodexPet/runtime` and loads the
+`com.coke1120.codex-pet` per-user LaunchAgent. Configure the supplied lifecycle
+hooks separately, merging them without replacing unrelated hooks, as described
+in the desktop guide. Rerun the installer after updating the repository.
+
+When automatic port selection is ambiguous, install with the verified P4 port:
+
+```bash
+bash mac/install.sh --port /dev/cu.<verified-p4-port>
+```
+
+See [Direct Codex Desktop and CLI synchronization](docs/CODEX_DESKTOP.md) for
+hook review, verification, logs, usage-data boundaries, and removal.
+
+## Manual bridge
+
+The manual bridge is useful for protocol and animation checks:
 
 ```bash
 cd mac
 python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements.txt
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python codex_pet_bridge.py --list
+.venv/bin/python codex_pet_bridge.py \
+  --port /dev/cu.<verified-p4-port> \
+  --interactive
 ```
 
-List serial ports:
-
-```bash
-python3 codex_pet_bridge.py --list
-```
-
-Start interactive mode:
-
-```bash
-python3 codex_pet_bridge.py --port auto --interactive
-```
-
-Send one state:
-
-```bash
-python3 codex_pet_bridge.py --port auto --state running
-```
-
-Stream newline-delimited states from another program:
-
-```bash
-printf 'running\nwaiting\nreview\nidle\n' | \
-  python3 codex_pet_bridge.py --port auto --stdin
-```
-
-Opening an Uno serial port usually resets the board. The bridge therefore waits for startup and requires a `pong` handshake before sending states.
-
-#### Windows
-
-The same Python bridge and daemon support Windows `COM` ports. Run the PowerShell installer once:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\windows\install.ps1
-```
-
-It installs an isolated runtime under `%LOCALAPPDATA%\CodexPet`, safely merges Codex hooks, and creates a per-user startup task. See [`docs/WINDOWS.md`](docs/WINDOWS.md) for requirements, verification, explicit `COM` selection, and removal.
-
-## Connecting a coding workflow
-
-For direct Codex Desktop/CLI reflection, use the official lifecycle-hook integration in [`docs/CODEX_DESKTOP.md`](docs/CODEX_DESKTOP.md). The hook maps active turns, tool calls, approvals, review/test commands, and turn completion into the four display states; the persistent daemon keeps the Serial port open and aggregates concurrent Codex sessions.
-
-The manual `--stdin` method below remains useful for non-Codex tools or custom workflows.
-
-The most reliable integration is for the process that knows the real activity phase to write explicit newline-delimited states to a persistent `--stdin` bridge:
+The supported lifecycle commands and responses are:
 
 ```text
-running
-waiting
-review
-idle
+ping       -> pong
+idle       -> OK IDLE
+running    -> OK RUNNING
+waiting    -> OK WAITING
+review     -> OK REVIEW
+status     -> STATE <CURRENT_STATE>
 ```
 
-Keeping one bridge process open avoids resetting the Uno for every transition. A wrapper can send `running` before a task, `waiting` when input is required, `review` during review or test phases, and `idle` on completion. The Codex daemon also re-sends the current state periodically, so a board reset cannot silently leave the display out of sync.
+Keep one bridge or daemon process attached to the port. Two processes cannot
+safely own the same Serial device.
 
 ## Development verification
 
-Run the discoverable Python regression suite and syntax checks:
+Run the host tests and syntax checks on macOS:
 
 ```bash
-mac/.venv/bin/python -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v
 PYTHONPYCACHEPREFIX=/tmp/codex-pet-pycache \
-  mac/.venv/bin/python -m py_compile mac/*.py tools/*.py tests/*.py
+  python3 -m py_compile mac/*.py tools/*.py tests/*.py
 ```
 
-Compile the firmware against the supplied display configuration:
-
-```bash
-arduino-cli compile --fqbn arduino:avr:uno arduino/CodexPet
-```
-
-### ESP32-P4 target
-
-Generate a private selected-pet asset when desired, then build the public or
-custom target:
+Build the P4 firmware in an ESP-IDF 5.5.1 shell:
 
 ```bash
 cd esp32-p4
@@ -357,72 +219,50 @@ idf.py set-target esp32p4
 idf.py build
 ```
 
-See [`docs/ESP32_P4.md`](docs/ESP32_P4.md) for the asset generator, P4 and C6
-port identification, touch navigation, Serial protocol, flash procedures, and
-physical acceptance checklist.
+GitHub Actions uses macOS for supported host checks and Ubuntu only as firmware
+build infrastructure. CI compile success does not replace the physical display,
+touch, P4/C6 radio, Serial, and camera-inactivity checks in
+[`docs/ESP32_P4.md`](docs/ESP32_P4.md).
 
-GitHub Actions repeats the Python and Uno checks plus a rights-safe ESP32-P4
-build carrying the full v2 asset byte footprint for every push and pull request.
+## Privacy and redistribution
 
-## TFT troubleshooting
+- The lifecycle hook stores only a hashed session key, mapped state, event name,
+  and timestamp. It does not store prompts or transcript content.
+- Codex Usage reads only local `token_count` events and sends aggregate integers.
+  It is not an account quota or billing report.
+- Wi-Fi passwords are cleared from the UI after submission and are not included
+  in UI status snapshots or logs.
+- Custom pet artwork remains local and must not be published without explicit
+  redistribution rights.
+- Review [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) before distributing
+  firmware binaries.
 
-- **Lit white screen:** the backlight is powered but the controller has not initialized. Check common ground, `CS/DC/RST`, `MOSI/SCK`, and confirm `DC → D8`, `RST → D9`. If using a translator, also check its rails, enable pin, and A/B orientation.
-- **Unlit black screen:** check `VDD`, `BLK`, ground, and the module's documented supply voltage before debugging SPI.
-- **Shifted or cropped image:** try one of `ST7735_BLACKTAB`, `ST7735_GREENTAB`, or `ST7735_GREENTAB2` instead of `ST7735_REDTAB`. Enable only one.
-- **Red and blue swapped:** enable `#define TFT_RGB_ORDER TFT_BGR` in `User_Setup.h`.
-- **Flicker or corrupted pixels:** shorten wires, verify voltage compatibility (and level translation when required), and reduce `SPI_FREQUENCY` from 8 MHz to 4 MHz.
-- **Limited animation performance:** TFT_eSPI is primarily optimised for 32-bit MCUs. The project avoids large buffers so it can use the generic AVR path, but an RP2040 or ESP32 provides smoother animation and more room for sprites.
+## Vendor BSP provenance
 
-## Arduino Uno R3 capacity notes
+The repository preserves the redistributable, model-specific source subset from
+the supplied JC4880P443C-I-W package under
+[`vendor/jc4880p443c_i_w_bsp/`](vendor/jc4880p443c_i_w_bsp/), with archive hashes
+and license records. This snapshot is provenance material; the active build uses
+the commit-pinned community BSP recorded in `esp32-p4/dependencies.lock`.
 
-The Uno R3 is deliberately small by modern standards:
+The original resource archive also contains utilities for other operating
+systems and unrelated packages. Those archived contents do not expand this
+project's macOS-only host support policy.
 
-- ATmega328P program flash: **32 KB total**
-- Bootloader reservation: roughly **0.5 KB**, leaving **32,256 bytes** for a normal sketch
-- SRAM: **2 KB**
-- EEPROM: **1 KB**
+## Current verification boundary
 
-A full 128×160 RGB565 framebuffer alone needs **40,960 bytes**, so it cannot fit in Uno SRAM. A locally generated custom-pet build can store eight `86×94` frames in program flash using an 8-colour palette and RLE, then stream each decoded frame directly to the TFT. The verified custom build currently uses approximately **30 KB (93%) flash** and **507 bytes (24%) SRAM**; the smaller public fallback build leaves more flash free. The exact numbers printed by your toolchain are authoritative.
+The board/display path has been built, flashed, and hash-verified on an
+ESP32-P4 revision v1.3 unit. The full v2 asset has also linked successfully.
+Settings, Codex Usage, P4/C6 SDIO, Wi-Fi, BLE advertising, updated Serial
+exchange, and continuous display/touch stability still require the complete
+physical checklist in [`docs/ESP32_P4.md`](docs/ESP32_P4.md).
 
-This is enough for a large two-frame loop in each of the four states, but not for the complete 8×11 desktop atlas. For full-frame-count animation, smoother motion, richer colour, or runtime loading from storage, use a board such as an RP2040 or ESP32 with substantially more flash and RAM.
+## Contributing and security
 
-## Ideas for expansion
-
-- Add a right-swipe Mac status panel
-- Add long-press Focus and Pomodoro quick actions
-- Add automatic night dimming and a dedicated sleeping sequence
-- Store compact RGB565 sprite frames in `PROGMEM`
-- Add an SD card for image assets, with a separate chip-select pin
-- Move to RP2040 or ESP32 for `TFT_eSprite` double buffering
-- Add a buzzer, buttons, rotary encoder, or ambient-light sensor
-- Control the backlight through a suitable transistor or MOSFET
-- Extend the protocol with sequence IDs and an explicit lifecycle timeout fallback
-- Add a Linux service installer for the existing portable Python bridge
-
-## Compatibility notes
-
-TFT_eSPI describes itself as a library for 32-bit processors, while its current source also contains a generic AVR path. This project uses that generic AVR path and avoids a framebuffer. With TFT_eSPI 2.5.43, the supplied setup, and a locally generated eight-frame `86×94` pet header, the verified custom build uses about 30 KB (93%) of flash and 507 bytes (24%) of SRAM. The public fallback mascot uses less flash. For a new build where the microcontroller is flexible, RP2040 or ESP32 is recommended.
-
-## Contributing
-
-Bug reports, display-tab findings, bridge improvements, and new lightweight animations are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
-
-## Security
-
-Do not include serial-device inventories, usernames, home-directory paths, credentials, or private logs in issues. See [SECURITY.md](SECURITY.md) for responsible reporting.
-
-## Support
-
-If this project is useful, you can [sponsor its maintenance on GitHub](https://github.com/sponsors/Coke1120).
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request. Report
+security vulnerabilities privately according to [`SECURITY.md`](SECURITY.md).
 
 ## License
 
-Released under the [MIT License](LICENSE). Optional dependencies and their
-redistribution boundaries are documented in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
-
-## Acknowledgements and trademark notice
-
-- Display support is provided by the community-maintained [`TFT_eSPI`](https://github.com/Bodmer/TFT_eSPI) library.
-- Arduino is a trademark of Arduino SA.
-- OpenAI and Codex are trademarks of OpenAI. This independent community project is not affiliated with or endorsed by OpenAI.
+Project-authored code and documentation are available under the [MIT License](LICENSE).
+Third-party components and generated artwork retain their own terms.

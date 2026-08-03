@@ -1,7 +1,7 @@
 # ESP32-P4 target: GUITION JC4880P443C-I-W
 
-This target adds an ESP-IDF/LVGL firmware alongside the original Arduino Uno
-build. It is specifically configured for the enclosed **GUITION
+This is the maintained ESP-IDF/LVGL firmware target. It is specifically
+configured for the enclosed **GUITION
 JC4880P443C-I-W** variant with:
 
 - ESP32-P4 main processor
@@ -42,8 +42,8 @@ archive checksum, per-file archive hashes, component versions, and licenses are
 recorded beside the sources. It includes the package's model-specific
 `guition-jc4880p443` board configuration and implementation as well as its
 required/common ESP-IDF components. The full 309 MB resource archive is not
-committed because it also contains videos, prebuilt firmware, Windows utilities,
-and unrelated third-party packages.
+committed because it also contains videos, prebuilt firmware, host utility
+bundles, and unrelated third-party packages.
 
 This snapshot is not selected by CMake; its model-specific source depends on the
 surrounding Xiaozhi application abstractions. The active firmware remains on the
@@ -179,7 +179,7 @@ python3 mac/codex_pet_bridge.py \
   --interactive
 ```
 
-The lifecycle protocol remains shared with the Uno firmware:
+The lifecycle protocol uses these newline-delimited commands:
 
 ```text
 ping       -> pong
@@ -205,10 +205,9 @@ usage <latest_session_tokens> <today_tokens> <today_cached_input_tokens> <today_
 
 Temperatures accept one decimal place. Conditions are `clear`,
 `partly_cloudy`, `cloudy`, `fog`, `rain`, `snow`, `thunder`, or `unknown`.
-Unsupported or legacy boards explicitly reject the capability probe, and the
-daemon then sends lifecycle commands only. A probe timeout is treated as a
-retryable connection failure so a transient P4 response delay cannot silently
-disable P4 extensions. `usage` contains non-negative token counters and a Unix
+An incomplete capability response is treated as a retryable connection failure
+so a transient P4 response delay cannot silently disable v2 extensions. `usage`
+contains non-negative token counters and a Unix
 update timestamp; it is not an account or subscription quota.
 
 The daemon obtains Hong Kong data from the no-key
@@ -268,8 +267,7 @@ After flashing, verify all of the following on the real board:
     daemon. A downward swipe or Back returns Home. Leave the daemon stopped
     long enough to observe aging at five minutes and stale at 30 minutes.
 11. `capabilities`, all four lifecycle commands, `clock`, `weather`, and `usage`
-    return the exact acknowledgements above; a legacy board remains
-    lifecycle-only.
+    return the exact acknowledgements above.
 12. Time continues advancing between minute syncs; a failed weather or usage
     refresh does not block lifecycle or clock updates.
 13. The backlight and scaled animation remain stable while Wi-Fi scans and BLE
@@ -283,15 +281,13 @@ similar P4 display.
 
 ## Codex Desktop integration
 
-No separate host installation is required for the P4 target. The existing
-`mac/codex_pet_daemon.py`, lifecycle hooks, and Windows installer use the same
-newline-delimited lifecycle protocol and negotiate P4-only extensions. The
+Install the macOS runtime with `bash mac/install.sh`. The daemon and lifecycle
+hooks use the newline-delimited protocol above and negotiate v2 extensions. The
 daemon supplies usage aggregates over USB; Wi-Fi is not required for lifecycle
 or usage sync. Generic CH340 ports intentionally remain excluded
 from automatic discovery because their metadata cannot prove which board is
-attached; configure the daemon with the verified explicit P4 port. If both Uno
-and P4 are connected, `auto` refuses to guess; run one daemon per board with an
-explicit port if both should mirror the same lifecycle state.
+attached; configure the daemon with the verified explicit P4 port when automatic
+selection is ambiguous. The maintained host environment is macOS.
 
 ## Verified boundary
 

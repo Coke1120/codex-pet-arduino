@@ -1,5 +1,2 @@
 blank_issues_enabled: false
-contact_links:
-  - name: Hardware safety question
-    url: https://forum.arduino.cc/
-    about: Ask general electrical and board-level questions in the Arduino community forum.
+contact_links: []

@@ -8,11 +8,8 @@ permissions:
   contents: read
 
 jobs:
-  python:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  macos-host:
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -21,26 +18,6 @@ jobs:
       - run: python -m pip install -r mac/requirements.txt
       - run: python -m unittest discover -s tests -v
       - run: python -c "import glob, py_compile; [py_compile.compile(p, doraise=True) for pattern in ('mac/*.py', 'tools/*.py', 'tests/*.py') for p in glob.glob(pattern)]"
-      - name: Parse Windows installer
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path windows/install.ps1), [ref]$null, [ref]$errors) > $null
-          if ($errors.Count) { $errors | Out-String | Write-Error; exit 1 }
-
-  firmware:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: arduino/setup-arduino-cli@81d310742121c928ea9c8bbd407b4217b432ae02 # v2
-        with:
-          version: "1.5.1"
-      - run: arduino-cli core update-index
-      - run: arduino-cli core install arduino:avr@1.8.8
-      - run: arduino-cli lib install "TFT_eSPI@2.5.43"
-      - run: cp config/User_Setup.h "$HOME/Arduino/libraries/TFT_eSPI/User_Setup.h"
-      - run: arduino-cli compile --fqbn arduino:avr:uno --warnings all arduino/CodexPet
 
   esp32-p4-firmware:
     runs-on: ubuntu-latest
