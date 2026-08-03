@@ -191,11 +191,22 @@ class ManualBridgeTests(unittest.TestCase):
         uno = fake_port("/dev/cu.usbmodem1", "Arduino UNO")
         uno.vid = 0x2341
         uno.pid = 0x0043
+        esp32_p4 = fake_port("/dev/cu.usbmodem2101", "ESP32-P4 USB JTAG/serial debug unit")
+        esp32_p4.vid = 0x303A
+        esp32_p4.pid = 0x1001
         adapter = fake_port("/dev/cu.usbserial-1", "USB Serial")
-        self.assertGreater(bridge.arduino_score(uno), bridge.arduino_score(adapter))
+        generic_esp = fake_port("/dev/cu.usbmodem3101", "USB JTAG/serial debug unit")
+        c6 = fake_port("/dev/cu.usbmodem4101", "ESP32-C6 USB JTAG/serial debug unit")
+        self.assertGreater(bridge.board_score(uno), bridge.board_score(adapter))
+        self.assertGreater(bridge.board_score(esp32_p4), bridge.board_score(adapter))
+        self.assertEqual(bridge.board_score(generic_esp), 10)
+        self.assertEqual(bridge.board_score(c6), 10)
         self.assertIn("VID:PID=2341:0043", bridge.port_description(uno))
-        with patch.object(bridge, "detected_ports", return_value=[adapter, uno]):
-            self.assertEqual(bridge.choose_port("auto"), uno.device)
+        with patch.object(bridge, "detected_ports", return_value=[adapter, esp32_p4]):
+            self.assertEqual(bridge.choose_port("auto"), esp32_p4.device)
+        with patch.object(bridge, "detected_ports", return_value=[uno, esp32_p4]):
+            with self.assertRaisesRegex(SystemExit, "will not guess"):
+                bridge.choose_port("auto")
 
     def test_windows_com_ports_are_discovered(self) -> None:
         com = fake_port("COM4", "Arduino UNO")
@@ -326,6 +337,7 @@ class DaemonPortTests(unittest.TestCase):
     def test_auto_port_requires_one_unambiguous_arduino(self) -> None:
         first = fake_port("/dev/cu.usbmodem1", "Arduino UNO")
         second = fake_port("/dev/cu.usbmodem2", "Arduino UNO")
+        p4 = fake_port("/dev/cu.usbmodem2101", "ESP32-P4 USB JTAG/serial debug unit")
         adapter = fake_port("/dev/cu.usbserial-1", "USB Serial")
 
         with patch.object(daemon, "detected_ports", return_value=[first]):
@@ -333,6 +345,8 @@ class DaemonPortTests(unittest.TestCase):
         with patch.object(daemon, "detected_ports", return_value=[adapter]):
             self.assertIsNone(daemon.choose_port("auto"))
         with patch.object(daemon, "detected_ports", return_value=[first, second]):
+            self.assertIsNone(daemon.choose_port("auto"))
+        with patch.object(daemon, "detected_ports", return_value=[first, p4]):
             self.assertIsNone(daemon.choose_port("auto"))
 
     def test_missing_port_warning_is_throttled(self) -> None:

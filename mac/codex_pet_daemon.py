@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persistent cross-platform Codex lifecycle and Arduino Serial bridge."""
+"""Persistent cross-platform Codex lifecycle and board Serial bridge."""
 
 import argparse
 import json
@@ -56,7 +56,7 @@ def detected_ports() -> List[ListPortInfo]:
     )
 
 
-def arduino_score(port: ListPortInfo) -> int:
+def board_score(port: ListPortInfo) -> int:
     text = " ".join(
         str(value or "")
         for value in (port.description, port.manufacturer, port.product, port.interface)
@@ -66,6 +66,8 @@ def arduino_score(port: ListPortInfo) -> int:
         score += 100
     if "uno" in text:
         score += 50
+    if "esp32-p4" in text or "esp32p4" in text or "jc4880p443c" in text:
+        score += 150
     if port.device.startswith("/dev/cu.usbmodem"):
         score += 10
     if port.device.upper().startswith("COM") and port.vid is not None:
@@ -73,17 +75,19 @@ def arduino_score(port: ListPortInfo) -> int:
     return score
 
 
+def arduino_score(port: ListPortInfo) -> int:
+    return board_score(port)
+
+
 def choose_port(requested: str) -> Optional[str]:
     if requested != "auto":
         if sys.platform == "win32":
             return requested if requested.upper().startswith("COM") else None
         return requested if Path(requested).exists() else None
-    candidates = [p for p in detected_ports() if arduino_score(p) > 0]
+    candidates = [p for p in detected_ports() if board_score(p) > 0]
     if not candidates:
         return None
-    best = max(arduino_score(p) for p in candidates)
-    winners = [p.device for p in candidates if arduino_score(p) == best]
-    return winners[0] if len(winners) == 1 else None
+    return candidates[0].device if len(candidates) == 1 else None
 
 
 def _file_identity(path: Path) -> Optional[Tuple[int, int, int, int]]:

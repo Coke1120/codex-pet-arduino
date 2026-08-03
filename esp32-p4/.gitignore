@@ -1,0 +1,8 @@
+# ESP-IDF build products and Component Manager downloads
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+
+# Private selected Codex pet art; regenerate locally with tools/convert_codex_pet_p4.py
+main/pet_generated.c
