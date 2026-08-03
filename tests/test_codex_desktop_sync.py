@@ -357,7 +357,7 @@ class DaemonPortTests(unittest.TestCase):
 
 class ArduinoLinkTests(unittest.TestCase):
     def test_constructor_handshake_and_state_protocol(self) -> None:
-        board = FakeBoard([b"boot message\n", b"pong\n"])
+        board = FakeBoard([b"boot message\n", b"pong\n", b"ERR unknown\n"])
         with patch.object(daemon.serial, "Serial", return_value=board), patch.object(
             daemon.time, "sleep"
         ):
@@ -367,10 +367,73 @@ class ArduinoLinkTests(unittest.TestCase):
         link.send_state("running")
         link.close()
 
-        self.assertEqual(board.writes, [b"ping\n", b"running\n"])
-        self.assertEqual(board.flush_count, 2)
+        self.assertEqual(
+            board.writes, [b"ping\n", b"capabilities\n", b"running\n"]
+        )
+        self.assertEqual(board.flush_count, 3)
         self.assertEqual(board.reset_count, 1)
         self.assertTrue(board.closed)
+        self.assertEqual(link.capabilities, set())
+
+    def test_capability_probe_enables_only_known_v2_features(self) -> None:
+        board = FakeBoard(
+            [b"pong\n", b"OK CAPABILITIES clock future_feature weather\n"]
+        )
+        with patch.object(daemon.serial, "Serial", return_value=board), patch.object(
+            daemon.time, "sleep"
+        ):
+            link = daemon.ArduinoLink("/dev/cu.test")
+
+        self.assertEqual(link.capabilities, {"clock", "weather"})
+        self.assertEqual(board.writes, [b"ping\n", b"capabilities\n"])
+
+    def test_capability_timeout_is_retryable_transport_failure(self) -> None:
+        link = daemon.ArduinoLink.__new__(daemon.ArduinoLink)
+        link.board = FakeBoard()
+        with patch.object(
+            daemon.time, "monotonic", side_effect=[0.0, 0.1, 0.5]
+        ), self.assertRaisesRegex(OSError, "capability probe timed out"):
+            link._probe_capabilities(0.5)
+        self.assertEqual(link.board.writes, [b"capabilities\n"])
+
+    def test_clock_and_weather_require_exact_ack_and_exact_writes(self) -> None:
+        snapshot = daemon.WeatherSnapshot(
+            29.5, 27.0, 32.0, 82, "rain", 1_722_730_800
+        )
+        link = daemon.ArduinoLink.__new__(daemon.ArduinoLink)
+        link.board = FakeBoard([b"OK CLOCK\n", b"OK WEATHER\n"])
+
+        link.send_clock(1_722_730_800, 28_800)
+        link.send_weather(snapshot)
+
+        self.assertEqual(
+            link.board.writes,
+            [
+                b"clock 1722730800 28800\n",
+                b"weather 29.5 27 32 82 rain 1722730800\n",
+            ],
+        )
+
+    def test_clock_and_weather_reject_invalid_fields_before_write(self) -> None:
+        invalid_snapshots = (
+            daemon.WeatherSnapshot(float("nan"), 27, 32, 82, "rain", 1),
+            daemon.WeatherSnapshot(29, 33, 32, 82, "rain", 1),
+            daemon.WeatherSnapshot(29, 27, 32, 101, "rain", 1),
+            daemon.WeatherSnapshot(29, 27, 32, 82, "rain later", 1),
+            daemon.WeatherSnapshot(29, 27, 32, 82, "rain", -1),
+        )
+        link = daemon.ArduinoLink.__new__(daemon.ArduinoLink)
+        link.board = FakeBoard()
+        with self.assertRaises(ValueError):
+            link.send_clock(1.5, 28_800)
+        with self.assertRaises(ValueError):
+            link.send_clock(daemon.MAX_UNIX_EPOCH + 1, 28_800)
+        with self.assertRaises(ValueError):
+            link.send_clock(1, 60_000)
+        for snapshot in invalid_snapshots:
+            with self.subTest(snapshot=snapshot), self.assertRaises(ValueError):
+                link.send_weather(snapshot)
+        self.assertEqual(link.board.writes, [])
 
     def test_constructor_closes_board_when_handshake_fails(self) -> None:
         board = FakeBoard()
@@ -431,6 +494,304 @@ class HeartbeatTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 with self.assertRaises(daemon.argparse.ArgumentTypeError):
                     daemon.positive_float(raw)
+
+
+class WeatherSyncTests(unittest.TestCase):
+    def test_capability_parser_accepts_both_response_shapes(self) -> None:
+        self.assertEqual(
+            daemon.parse_capabilities("CAPABILITIES clock weather"),
+            {"clock", "weather"},
+        )
+        self.assertEqual(
+            daemon.parse_capabilities("OK CAPABILITIES weather future"), {"weather"}
+        )
+        self.assertEqual(
+            daemon.parse_capabilities(
+                "CAPABILITIES 2 lifecycle clock weather today-v1"
+            ),
+            {"clock", "weather"},
+        )
+        self.assertEqual(daemon.parse_capabilities("OK CLOCK"), set())
+
+    def test_wmo_mapping_covers_protocol_conditions(self) -> None:
+        cases = {
+            0: "clear",
+            2: "partly_cloudy",
+            3: "cloudy",
+            45: "fog",
+            61: "rain",
+            75: "snow",
+            95: "thunder",
+            999: "unknown",
+            "bad": "unknown",
+        }
+        for code, expected in cases.items():
+            with self.subTest(code=code):
+                self.assertEqual(daemon.wmo_condition(code), expected)
+
+    def test_open_meteo_response_is_parsed_deterministically(self) -> None:
+        snapshot = daemon.parse_open_meteo(
+            {
+                "current": {
+                    "time": 1_722_730_800,
+                    "temperature_2m": 29.4,
+                    "weather_code": 80,
+                },
+                "daily": {
+                    "temperature_2m_min": [27.1],
+                    "temperature_2m_max": [32.2],
+                    "precipitation_probability_max": [82],
+                    "weather_code": [80],
+                },
+            }
+        )
+        self.assertEqual(
+            snapshot,
+            daemon.WeatherSnapshot(29.4, 27.1, 32.2, 82, "rain", 1_722_730_800),
+        )
+
+    def test_today_forecast_condition_can_report_rain_later(self) -> None:
+        snapshot = daemon.parse_open_meteo(
+            {
+                "current": {
+                    "time": 1_722_730_800,
+                    "temperature_2m": 29.4,
+                    "weather_code": 3,
+                },
+                "daily": {
+                    "temperature_2m_min": [27.1],
+                    "temperature_2m_max": [32.2],
+                    "precipitation_probability_max": [82],
+                    "weather_code": [95],
+                },
+            }
+        )
+
+        self.assertEqual(snapshot.condition, "thunder")
+
+    def test_open_meteo_request_uses_hong_kong_without_dependencies(self) -> None:
+        payload = {
+            "current": {
+                "time": 1_722_730_800,
+                "temperature_2m": 29,
+                "weather_code": 0,
+            },
+            "daily": {
+                "temperature_2m_min": [27],
+                "temperature_2m_max": [32],
+                "precipitation_probability_max": [10],
+                "weather_code": [0],
+            },
+        }
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _kind, _value, _traceback):
+                return None
+
+            def read(self):
+                return json.dumps(payload).encode("utf-8")
+
+        with patch.object(
+            daemon.urllib.request, "urlopen", return_value=Response()
+        ) as urlopen:
+            daemon.fetch_hong_kong_weather(timeout=3.0)
+
+        request = urlopen.call_args.args[0]
+        self.assertIn("latitude=22.3193", request.full_url)
+        self.assertIn("longitude=114.1694", request.full_url)
+        self.assertIn("timezone=Asia%2FHong_Kong", request.full_url)
+        self.assertIn("forecast_days=1", request.full_url)
+        self.assertIn("timeformat=unixtime", request.full_url)
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 3.0)
+
+    def test_weather_worker_preserves_privacy_safe_cached_snapshot(self) -> None:
+        snapshot = daemon.WeatherSnapshot(29, 27, 32, 82, "rain", 1_722_730_800)
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary) / "weather-cache.json"
+            daemon._save_weather_cache(cache, snapshot)
+            fetcher = unittest.mock.Mock(side_effect=AssertionError("not started"))
+            worker = daemon.WeatherWorker(cache, fetcher=fetcher)
+
+            self.assertEqual(worker.snapshot(), snapshot)
+            self.assertEqual(
+                set(json.loads(cache.read_text(encoding="utf-8"))),
+                {
+                    "current",
+                    "low",
+                    "high",
+                    "rain_pct",
+                    "condition",
+                    "updated_epoch",
+                },
+            )
+            fetcher.assert_not_called()
+
+    def test_weather_worker_failure_preserves_snapshot_and_uses_retry_delay(
+        self,
+    ) -> None:
+        snapshot = daemon.WeatherSnapshot(29, 27, 32, 82, "rain", 1_722_730_800)
+
+        class OneIterationStop:
+            def __init__(self):
+                self.stopped = False
+                self.delays = []
+
+            def is_set(self):
+                return self.stopped
+
+            def wait(self, delay):
+                self.delays.append(delay)
+                self.stopped = True
+
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary) / "weather-cache.json"
+            daemon._save_weather_cache(cache, snapshot)
+            worker = daemon.WeatherWorker(
+                cache,
+                retry_interval=60.0,
+                fetcher=unittest.mock.Mock(side_effect=OSError("offline")),
+            )
+            stop = OneIterationStop()
+            worker._stop = stop
+
+            worker._run()
+
+            self.assertEqual(worker.snapshot(), snapshot)
+            self.assertEqual(worker.last_error(), "OSError: offline")
+            self.assertEqual(stop.delays, [60.0])
+
+    def test_weather_worker_success_replaces_cache_and_uses_refresh_delay(
+        self,
+    ) -> None:
+        original = daemon.WeatherSnapshot(28, 26, 31, 40, "cloudy", 100)
+        refreshed = daemon.WeatherSnapshot(29, 27, 32, 82, "rain", 200)
+
+        class OneIterationStop:
+            def __init__(self):
+                self.stopped = False
+                self.delays = []
+
+            def is_set(self):
+                return self.stopped
+
+            def wait(self, delay):
+                self.delays.append(delay)
+                self.stopped = True
+
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary) / "weather-cache.json"
+            daemon._save_weather_cache(cache, original)
+            fetcher = unittest.mock.Mock(return_value=refreshed)
+            worker = daemon.WeatherWorker(
+                cache,
+                refresh_interval=900.0,
+                timeout=3.0,
+                fetcher=fetcher,
+            )
+            stop = OneIterationStop()
+            worker._stop = stop
+
+            worker._run()
+
+            self.assertEqual(worker.snapshot(), refreshed)
+            self.assertIsNone(worker.last_error())
+            self.assertEqual(
+                json.loads(cache.read_text(encoding="utf-8")),
+                {
+                    "current": 29,
+                    "low": 27,
+                    "high": 32,
+                    "rain_pct": 82,
+                    "condition": "rain",
+                    "updated_epoch": 200,
+                },
+            )
+            self.assertEqual(stop.delays, [900.0])
+            fetcher.assert_called_once_with(3.0)
+
+    def test_once_with_legacy_link_sends_only_lifecycle(self) -> None:
+        link = unittest.mock.Mock()
+        link.capabilities = set()
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary) / "sessions"
+            state_dir.mkdir()
+            write_record(state_dir / "active.json", "running", daemon.time.time())
+            with patch.object(
+                daemon.sys,
+                "argv",
+                [
+                    "codex_pet_daemon.py",
+                    "--state-dir",
+                    str(state_dir),
+                    "--port",
+                    "/dev/cu.test",
+                    "--once",
+                ],
+            ), patch.object(daemon, "choose_port", return_value="/dev/cu.test"), patch.object(
+                daemon, "ArduinoLink", return_value=link
+            ), patch.object(daemon, "WeatherWorker") as worker_class, patch.object(
+                daemon.signal, "signal"
+            ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(daemon.main(), 0)
+
+        link.send_state.assert_called_once_with("running")
+        link.send_clock.assert_not_called()
+        link.send_weather.assert_not_called()
+        worker_class.assert_not_called()
+        link.close.assert_called_once_with()
+
+    def test_weather_worker_error_is_reported_by_daemon_loop(self) -> None:
+        link = unittest.mock.Mock()
+        link.capabilities = {"weather"}
+        worker = unittest.mock.Mock()
+        worker.snapshot.return_value = None
+        worker.last_error.return_value = "OSError: offline"
+
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            daemon.sys,
+            "argv",
+            [
+                "codex_pet_daemon.py",
+                "--state-dir",
+                temporary,
+                "--port",
+                "/dev/cu.test",
+                "--once",
+            ],
+        ), patch.object(daemon, "choose_port", return_value="/dev/cu.test"), patch.object(
+            daemon, "ArduinoLink", return_value=link
+        ), patch.object(daemon, "WeatherWorker", return_value=worker), patch.object(
+            daemon.signal, "signal"
+        ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(daemon.main(), 0)
+
+        self.assertIn(
+            "Codex Pet weather warning: OSError: offline", stderr.getvalue()
+        )
+        worker.start.assert_called_once_with()
+        worker.stop.assert_called_once_with()
+
+    def test_dry_run_never_starts_weather_or_network(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            daemon.sys,
+            "argv",
+            [
+                "codex_pet_daemon.py",
+                "--state-dir",
+                temporary,
+                "--dry-run",
+                "--once",
+            ],
+        ), patch.object(daemon, "WeatherWorker") as worker, patch.object(
+            daemon.urllib.request, "urlopen"
+        ) as urlopen, redirect_stdout(io.StringIO()):
+            self.assertEqual(daemon.main(), 0)
+
+        worker.assert_not_called()
+        urlopen.assert_not_called()
 
 
 if __name__ == "__main__":

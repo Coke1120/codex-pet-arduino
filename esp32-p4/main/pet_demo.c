@@ -26,6 +26,5 @@ static const lv_image_dsc_t pet_demo = {
 };
 
 const lv_image_dsc_t *const PET_FRAMES[PET_FRAME_COUNT] = {
-    &pet_demo, &pet_demo, &pet_demo, &pet_demo,
-    &pet_demo, &pet_demo, &pet_demo, &pet_demo,
+    [0 ... (PET_FRAME_COUNT - 1)] = &pet_demo,
 };

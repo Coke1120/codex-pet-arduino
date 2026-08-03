@@ -15,22 +15,69 @@ from pathlib import Path
 
 CELL_W = 192
 CELL_H = 208
-CROP_X = 30
+CROP_X = 20
 CROP_Y = 2
-CROP_W = 132
+CROP_W = 152
 CROP_H = 204
-FRAME_W = 396
-FRAME_H = 612
-FRAME_SPECS = (
-    ("IDLE_0", 0, 0),
-    ("IDLE_1", 0, 1),
-    ("RUNNING_0", 7, 0),
-    ("RUNNING_1", 7, 5),
-    ("WAITING_0", 6, 0),
-    ("WAITING_1", 6, 1),
-    ("REVIEW_0", 8, 0),
-    ("REVIEW_1", 8, 2),
+FRAME_W = CROP_W
+FRAME_H = CROP_H
+
+# Codex Pet v2 atlas contract. Rows 9-10 form one clockwise 16-frame action.
+ACTION_SPECS = (
+    ("IDLE", ((0, 6),)),
+    ("RUNNING_RIGHT", ((1, 8),)),
+    ("RUNNING_LEFT", ((2, 8),)),
+    ("WAVING", ((3, 4),)),
+    ("JUMPING", ((4, 5),)),
+    ("FAILED", ((5, 8),)),
+    ("WAITING", ((6, 6),)),
+    ("RUNNING", ((7, 6),)),
+    ("REVIEW", ((8, 6),)),
+    ("LOOK", ((9, 8), (10, 8))),
 )
+LOOK_DIRECTIONS = (
+    "000",
+    "022.5",
+    "045",
+    "067.5",
+    "090",
+    "112.5",
+    "135",
+    "157.5",
+    "180",
+    "202.5",
+    "225",
+    "247.5",
+    "270",
+    "292.5",
+    "315",
+    "337.5",
+)
+
+
+def build_frame_contract() -> tuple[
+    tuple[tuple[str, int, int], ...], tuple[tuple[str, int, int], ...]
+]:
+    frames: list[tuple[str, int, int]] = []
+    ranges: list[tuple[str, int, int]] = []
+    look_index = 0
+    for action, rows in ACTION_SPECS:
+        first = len(frames)
+        for row, count in rows:
+            for column in range(count):
+                if action == "LOOK":
+                    suffix = LOOK_DIRECTIONS[look_index].replace(".", "_")
+                    look_index += 1
+                else:
+                    suffix = str(column)
+                frames.append((f"{action}_{suffix}", row, column))
+        ranges.append((action, first, len(frames) - first))
+    if look_index != len(LOOK_DIRECTIONS):
+        raise RuntimeError("look direction count does not match the atlas rows")
+    return tuple(frames), tuple(ranges)
+
+
+FRAME_SPECS, ACTION_RANGES = build_frame_contract()
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,10 +95,7 @@ def parse_args() -> argparse.Namespace:
 def decode_rgba(ffmpeg: str, source: Path, row: int, column: int) -> bytes:
     x = column * CELL_W + CROP_X
     y = row * CELL_H + CROP_Y
-    vf = (
-        f"crop={CROP_W}:{CROP_H}:{x}:{y},"
-        f"scale={FRAME_W}:{FRAME_H}:flags=neighbor,format=rgba"
-    )
+    vf = f"crop={CROP_W}:{CROP_H}:{x}:{y},format=rgba"
     result = subprocess.run(
         [
             ffmpeg,

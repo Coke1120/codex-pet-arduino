@@ -1,6 +1,6 @@
 # Direct Codex Desktop and CLI synchronization
 
-The Python hook and Serial daemon support both macOS and Windows. This page covers the shared design and macOS service setup; Windows users should follow [`WINDOWS.md`](WINDOWS.md).
+The Python hook and Serial daemon support both macOS and Windows. This page covers the shared design and macOS service setup; Windows users should follow [`WINDOWS.md`](WINDOWS.md). ESP32-P4 boards additionally negotiate clock and Hong Kong weather sync; legacy Uno boards remain lifecycle-only.
 
 The basic `codex_pet_bridge.py` is intentionally manual: it sends only the state supplied through `--state`, `--interactive`, or `--stdin`. It does not inspect Codex Desktop automatically.
 
@@ -68,7 +68,7 @@ Run the persistent bridge manually:
 ```
 
 If more than one plausible board is attached, identify the Uno with `arduino-cli board list`, then pass its exact `/dev/cu.*` path or Windows `COM` name using `--port`.
-The daemon re-sends the selected state every five seconds by default so an Arduino reset cannot silently desynchronize the display. Use `--heartbeat SECONDS` to choose another positive interval.
+The daemon re-sends the selected state every five seconds by default so a board reset cannot silently desynchronize the display. Use `--heartbeat SECONDS` to choose another positive interval. On a P4 that advertises `clock` and `weather`, it also sends local time once per minute and fetches Hong Kong weather in a background thread every 15 minutes. The weather worker starts only after capability negotiation, never during `--dry-run`, and can be disabled with `--no-weather`. Explicit legacy rejection keeps the connection lifecycle-only; a capability timeout is retried instead of silently downgrading a v2 board. Weather failures retain the cache and are reported once per distinct error until a successful refresh.
 
 ## 3. Configure Codex hooks
 

@@ -44,12 +44,17 @@ jobs:
 
   esp32-p4-firmware:
     runs-on: ubuntu-latest
+    env:
+      # Link a rights-safe payload with the same 6,790,752-byte footprint as
+      # the private 73-frame v2 atlas instead of measuring the tiny demo tile.
+      CODEX_PET_SIZE_FIXTURE: "1"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: espressif/install-esp-idf-action@8fc05d1470d5591417e7a3707a1f2bec178db4ae # v1 branch snapshot
         with:
           version: v5.5.1
-      - working-directory: esp32-p4
+      - name: Configure representative full-v2 firmware
+        working-directory: esp32-p4
         run: |
           idf.py set-target esp32p4
           grep -q '^CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y$' sdkconfig
@@ -58,5 +63,15 @@ jobs:
           grep -q '^CONFIG_LV_DRAW_SW_SUPPORT_RGB565A8=y$' sdkconfig
           grep -q '^CONFIG_PARTITION_TABLE_CUSTOM=y$' sdkconfig
           test "$(git -C .. status --porcelain -- esp32-p4/dependencies.lock)" = ""
-      - working-directory: esp32-p4
+      - name: Build representative full-v2 firmware
+        working-directory: esp32-p4
         run: idf.py build
+      - name: Verify protocol parser and firmware size margin
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror tests/test_pet_protocol.c esp32-p4/main/pet_protocol.c -Iesp32-p4/main -o /tmp/pet_protocol_test
+          /tmp/pet_protocol_test
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=undefined tests/test_pet_interaction.c esp32-p4/main/pet_interaction.c -Iesp32-p4/main -o /tmp/pet_interaction_test
+          /tmp/pet_interaction_test
+          riscv32-esp-elf-nm -S --size-sort esp32-p4/build/codex_pet_jc4880p443c.elf | grep -Eq '^[[:xdigit:]]+ 00679e60 [rR] pet_size_fixture_payload$'
+          riscv32-esp-elf-nm -S --size-sort esp32-p4/build/codex_pet_jc4880p443c.elf | grep -Eq '^[[:xdigit:]]+ 000007fc [rR] pet_size_fixture_images$'
+          python -c "from pathlib import Path; size=Path('esp32-p4/build/codex_pet_jc4880p443c.bin').stat().st_size; limit=0x7F0000; assert size <= limit - 0x80000, f'firmware leaves less than 512 KiB margin: {size}/{limit}'"

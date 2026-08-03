@@ -6,8 +6,8 @@
 [![Python](https://img.shields.io/badge/bridge-Python%203-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![CI](https://github.com/Coke1120/codex-pet-dev-board/actions/workflows/ci.yml/badge.svg)](https://github.com/Coke1120/codex-pet-dev-board/actions/workflows/ci.yml)
 
-Two firmware targets share the same Codex Desktop/CLI hooks and USB Serial
-protocol:
+Two firmware targets share the same Codex Desktop/CLI hooks and backwards-
+compatible USB Serial lifecycle protocol:
 
 - **Arduino Uno R3 + 1.8-inch ST7735 128×160 TFT** — the original low-memory
   reference build with compressed pixel-art frames.
@@ -15,20 +15,29 @@ protocol:
   ESP-IDF/LVGL build for the ESP32-P4, with the onboard ESP32-C6 available for
   future wireless features.
 
-Both firmware implementations understand the animated `idle`, `running`,
-`waiting`, and `review` state model. The Uno build can mirror the selected custom
+Both firmware implementations understand `idle`, `running`, `waiting`, and
+`review`. The Uno build can mirror the selected custom
 Codex pet through a gitignored generated header. The P4 public build uses a small
 red test tile so CI and new users can compile without private artwork; generating
-the gitignored high-resolution local asset activates the selected-pet animation.
-The P4 target has been clean-built and flashed on the target board; visual
-confirmation of the new selected-pet frames, Serial acknowledgements, and
-exhaustive touch/state acceptance remain pending. See [`docs/ESP32_P4.md`](docs/ESP32_P4.md).
+the gitignored local asset activates all 73 used frames in a Codex Pet v2 8×11
+atlas. The P4 extension capability-negotiates minute clock sync and Hong Kong
+weather from the Mac daemon, adds a pull-down Today Panel, and uses the v2 wave,
+jump, failure, directional-look, waiting, running, and review actions for touch
+and lifecycle reactions. Legacy Uno boards never receive the new commands.
+The underlying P4 board/display route was previously clean-built and flashed on
+the target board. This Today Pet revision has been linked with the full private
+v2 asset, but its selected-pet rendering, Serial acknowledgements, and touch/state
+behaviour still require physical acceptance. See [`docs/ESP32_P4.md`](docs/ESP32_P4.md).
 
 > Search keywords: Arduino desktop pet, Codex Pet, physical AI coding assistant, ST7735 animation, TFT_eSPI Arduino Uno, serial status display, pixel art robot pet, macOS and Windows Arduino bridge.
 
 ## Features
 
-- Four animated states: `idle`, `running`, `waiting`, and `review`
+- Four backwards-compatible lifecycle states: `idle`, `running`, `waiting`, and `review`
+- Full 73-frame Codex Pet v2 action and look-direction contract on ESP32-P4
+- Thin time/weather bar and pull-down Today Panel on the 480×800 touch target
+- Tap reactions with cooldown and priority-safe return to the current lifecycle state
+- Capability-gated clock and Hong Kong weather sync with a stale-data fallback
 - Large portrait pet view with a compact status strip
 - Real Codex custom-pet frames converted from the selected local atlas
 - 8-colour RLE assets and streaming SPI draws designed for Uno flash/RAM limits
@@ -47,12 +56,14 @@ exhaustive touch/state acceptance remain pending. See [`docs/ESP32_P4.md`](docs/
 
 | Command | Display behaviour | Suggested meaning |
 |---|---|---|
-| `idle` | Quiet two-frame loop | Ready or finished |
-| `running` | Active two-frame work loop | Coding or executing |
-| `waiting` | Expectant two-frame loop | Waiting for user input |
-| `review` | Focused two-frame loop | Reviewing code or tests |
+| `idle` | Quiet idle loop | Ready or finished |
+| `running` | Active work loop | Coding or executing |
+| `waiting` | Expectant loop | Waiting for user input |
+| `review` | Focused review loop | Reviewing code or tests |
 
-Additional diagnostic commands are `ping` and `status`.
+Additional shared diagnostic commands are `ping` and `status`. The P4 reports
+its optional v2 extensions through `capabilities` before the daemon sends clock
+or weather data.
 
 ## Firmware targets
 
@@ -67,6 +78,13 @@ USB Serial. The enclosed camera is not initialized by this firmware; its
 inactivity remains part of the physical acceptance checklist.
 See [`docs/ESP32_P4.md`](docs/ESP32_P4.md) for exact build, flash, and hardware
 verification instructions.
+
+The repository also preserves the model-specific JC4880P443 board source,
+its MIT license, and the Apache-2.0/CC0 common components supplied with the
+JC4880P443C-I-W vendor package under
+[`vendor/jc4880p443c_i_w_bsp/`](vendor/jc4880p443c_i_w_bsp/). It is a provenance
+snapshot with per-file archive hashes; the firmware keeps using the
+commit-pinned BSP that passed the current build and board bring-up checks.
 
 ## Hardware
 
@@ -331,10 +349,11 @@ idf.py build
 ```
 
 See [`docs/ESP32_P4.md`](docs/ESP32_P4.md) for the asset generator, exact port
-identification, flash procedure, and physical acceptance checklist.
+identification, Today Panel protocol, flash procedure, and physical acceptance
+checklist.
 
-GitHub Actions repeats the Python, Uno, and public ESP32-P4 builds for every
-push and pull request.
+GitHub Actions repeats the Python and Uno checks plus a rights-safe ESP32-P4
+build carrying the full v2 asset byte footprint for every push and pull request.
 
 ## TFT troubleshooting
 
@@ -360,13 +379,15 @@ This is enough for a large two-frame loop in each of the four states, but not fo
 
 ## Ideas for expansion
 
-- Add `success`, `error`, `sleeping`, or notification states
+- Add left-swipe Codex activity and right-swipe Mac status panels
+- Add long-press Focus and Pomodoro quick actions
+- Add automatic night dimming and a dedicated sleeping sequence
 - Store compact RGB565 sprite frames in `PROGMEM`
 - Add an SD card for image assets, with a separate chip-select pin
 - Move to RP2040 or ESP32 for `TFT_eSprite` double buffering
 - Add a buzzer, buttons, rotary encoder, or ambient-light sensor
 - Control the backlight through a suitable transistor or MOSFET
-- Extend the protocol with sequence IDs and an explicit firmware-side timeout fallback
+- Extend the protocol with sequence IDs and an explicit lifecycle timeout fallback
 - Add a Linux service installer for the existing portable Python bridge
 
 ## Compatibility notes
