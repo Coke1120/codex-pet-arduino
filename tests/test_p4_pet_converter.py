@@ -83,7 +83,7 @@ class P4PetConverterTests(unittest.TestCase):
             ),
         )
 
-    def test_lifecycle_animation_preserves_v1_per_frame_cadence(self):
+    def test_lifecycle_animation_preserves_established_per_frame_cadence(self):
         source = (ROOT / "esp32-p4" / "main" / "codex_pet_main.c").read_text(
             encoding="utf-8"
         )

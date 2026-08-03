@@ -46,6 +46,17 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /ABSOLUTE/PATH/TO/codex-pet-dev-board/mac/codex_pet_hook.py",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "PermissionRequest": [
       {
         "hooks": [

@@ -50,14 +50,25 @@ def write_record(path: Path, state: str, updated_at: float) -> None:
 
 
 class HookTests(unittest.TestCase):
-    def test_default_state_dir_is_macos_application_support(self) -> None:
-        with patch.dict(hook.os.environ, {}, clear=True), patch.object(
-            hook.Path, "home", return_value=Path("/Users/example")
-        ):
-            self.assertEqual(
-                hook.default_state_dir(),
-                Path("/Users/example/Library/Application Support/CodexPet/sessions"),
-            )
+    def test_default_state_dir_contract_is_shared(self) -> None:
+        expected = Path(
+            "/Users/example/Library/Application Support/CodexPet/sessions"
+        )
+        for module in (hook, daemon):
+            with self.subTest(module=module.__name__), patch.dict(
+                module.os.environ, {}, clear=True
+            ), patch.object(module.Path, "home", return_value=Path("/Users/example")):
+                self.assertEqual(module.default_state_dir(), expected)
+
+    def test_state_dir_override_contract_is_shared(self) -> None:
+        expected = Path("/private/tmp/codex-pet-state")
+        for module in (hook, daemon):
+            with self.subTest(module=module.__name__), patch.dict(
+                module.os.environ,
+                {"CODEX_PET_STATE_DIR": str(expected)},
+                clear=True,
+            ):
+                self.assertEqual(module.default_state_dir(), expected)
 
     def test_event_mapping(self) -> None:
         cases = {

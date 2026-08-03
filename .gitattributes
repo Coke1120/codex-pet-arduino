@@ -1,2 +1,2 @@
-# Keep the provenance snapshot byte-stable across Windows and Unix checkouts.
+# Keep the provenance snapshot byte-stable across checkout tooling.
 vendor/jc4880p443c_i_w_bsp/** -text

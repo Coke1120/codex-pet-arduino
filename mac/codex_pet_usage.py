@@ -139,10 +139,9 @@ def collect_usage(
     sessions_root: Path, now: Optional[datetime] = None
 ) -> UsageSnapshot:
     """Read token_count aggregates only; no transcript fields leave this function."""
-    current = datetime.now().astimezone() if now is None else now
-    if current.tzinfo is None:
+    local_now = datetime.now().astimezone() if now is None else now
+    if local_now.tzinfo is None:
         raise ValueError("now must include a timezone")
-    local_now = current if now is not None else current.astimezone()
     local_day = local_now.date()
     newest_time: Optional[datetime] = None
     latest_session_tokens = 0

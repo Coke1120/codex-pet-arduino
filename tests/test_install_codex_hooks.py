@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+EXAMPLE = ROOT / "examples" / "codex-hooks.json"
 SPEC = importlib.util.spec_from_file_location(
     "install_codex_hooks", ROOT / "tools" / "install_codex_hooks.py"
 )
@@ -17,6 +18,28 @@ SPEC.loader.exec_module(installer)
 
 
 class InstallHooksTests(unittest.TestCase):
+    def test_checked_in_example_matches_the_installer_event_contract(self) -> None:
+        example = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+        hooks = example["hooks"]
+        self.assertEqual(set(hooks), set(installer.EVENTS))
+
+        expected = {
+            "type": "command",
+            "command": (
+                "python3 /ABSOLUTE/PATH/TO/codex-pet-dev-board/"
+                "mac/codex_pet_hook.py"
+            ),
+            "timeout": 3,
+        }
+        for event in installer.EVENTS:
+            with self.subTest(event=event):
+                commands = [
+                    command
+                    for group in hooks[event]
+                    for command in group.get("hooks", [])
+                ]
+                self.assertIn(expected, commands)
+
     def test_merge_preserves_unrelated_hooks_and_is_idempotent(self) -> None:
         existing = {
             "hooks": {

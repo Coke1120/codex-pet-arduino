@@ -80,7 +80,8 @@ mac/codex_pet_daemon.py           Persistent lifecycle/data synchronization daem
 mac/codex_pet_usage.py            Local token-count aggregate reader
 mac/install.sh                    macOS runtime and LaunchAgent installer
 tools/convert_codex_pet_p4.py     Codex Pet v2 atlas converter
-examples/                         Codex hook and LaunchAgent examples
+tools/install_codex_hooks.py      Non-destructive Codex hook merger
+examples/codex-hooks.json         Codex lifecycle hook configuration example
 tests/                            Host, protocol, converter, and interaction tests
 docs/ESP32_P4.md                  Build, flash, protocol, and hardware acceptance guide
 docs/CODEX_DESKTOP.md             macOS Codex synchronization guide

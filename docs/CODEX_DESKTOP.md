@@ -110,11 +110,20 @@ until a successful refresh.
 
 ## 3. Configure Codex hooks
 
-Codex loads user hooks from `~/.codex/hooks.json`. Start from
-[`examples/codex-hooks.json`](../examples/codex-hooks.json), replace every
-`/ABSOLUTE/PATH/TO/codex-pet-dev-board` with the real repository path, and merge
-its event groups into any existing `~/.codex/hooks.json` rather than overwriting
-unrelated hooks.
+Codex loads user hooks from `~/.codex/hooks.json`. From the repository root,
+use the merger to add every maintained lifecycle event without replacing
+unrelated hooks:
+
+```bash
+python3 tools/install_codex_hooks.py \
+  --hooks ~/.codex/hooks.json \
+  --python python3 \
+  --hook-script mac/codex_pet_hook.py
+```
+
+[`examples/codex-hooks.json`](../examples/codex-hooks.json) shows the resulting
+event groups and can also be merged manually after replacing
+`/ABSOLUTE/PATH/TO/codex-pet-dev-board` with the real repository path.
 
 After installing the macOS runtime in step 4, the hook commands may instead
 point to `~/Library/Application Support/CodexPet/runtime/codex_pet_hook.py`;
