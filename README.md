@@ -27,7 +27,7 @@ Ubuntu runners are firmware-build infrastructure only; desktop host support
 remains macOS-only. Generic Python or ESP-IDF code that happens to run elsewhere
 is an implementation detail, not a compatibility commitment.
 
-## Features
+## Enabled features
 
 - Four Codex lifecycle states: `idle`, `running`, `waiting`, and `review`
 - Complete 73-frame Codex Pet v2 action and look-direction contract
@@ -41,6 +41,30 @@ is an implementation detail, not a compatibility commitment.
 - USB Serial lifecycle, clock, weather, and usage synchronization
 - Persistent macOS LaunchAgent with official Codex lifecycle hooks
 - Local-only generated pet artwork excluded from Git
+
+## Board capabilities not enabled by this repository
+
+The JC4880P443C-I-W hardware and its vendor package expose more peripherals than
+the Codex Pet application initializes. The vendored BSP snapshot is retained for
+provenance and reference; it is not selected by the active CMake build. In this
+table, **available** means the board or BSP provides the path, not that Codex Pet
+installs, initializes, tests, or uses it.
+
+| Board capability | Supplied hardware or BSP path | Codex Pet status |
+|---|---|---|
+| Front camera | MIPI-CSI camera path; the vendor package includes OV02C10 sensor material | Disabled: no camera driver or pipeline, capture, storage, stream, or network upload |
+| Microphone | Onboard microphone through the ES8311 ADC and I2S input | Disabled: no codec initialization, audio capture, or recording |
+| Speaker output | ES8311 DAC, NS4150 amplifier, and MX1.25 two-pin speaker connector | Disabled: no audio playback; the bare `I-W` board does not guarantee that a speaker unit is fitted |
+| microSD / TF card | Card slot and BSP mount APIs | Disabled: the application does not mount, read, or write a card |
+| High-speed USB / USB Host | Secondary USB path and BSP host APIs | Disabled: no HID, storage, audio, video, or network class; the maintained host link is USB Serial/JTAG |
+| Lithium battery path | Battery connector and charger/power circuit | Hardware-only: no battery percentage, charge-state, sleep, or power-management UI |
+| RS-485 and expansion I/O | RS-485, UART, I2C, and GPIO connectors | Unassigned: no Codex Pet protocol, driver setup, or UI controls |
+
+Wi-Fi and BLE are enabled with deliberately narrower scope. Wi-Fi provides
+station enable, scan, connect, and forget controls, but Mac synchronization still
+uses USB Serial. BLE advertises `Codex Pet`; there is no BLE provisioning flow or
+custom application GATT service. Camera and microphone inactivity are privacy
+boundaries: the current application never reads either sensor.
 
 ## Interaction model
 
@@ -233,6 +257,8 @@ touch, P4/C6 radio, Serial, and camera-inactivity checks in
   It is not an account quota or billing report.
 - Wi-Fi passwords are cleared from the UI after submission and are not included
   in UI status snapshots or logs.
+- The camera and microphone are not initialized; the application contains no
+  image capture, audio recording, media storage, or media-upload path.
 - Custom pet artwork remains local and must not be published without explicit
   redistribution rights.
 - Review [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) before distributing
