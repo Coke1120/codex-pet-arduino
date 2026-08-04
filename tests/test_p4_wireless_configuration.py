@@ -71,7 +71,6 @@ class P4WirelessConfigurationTests(unittest.TestCase):
             "pet_wireless_wifi_set_enabled",
             "pet_wireless_wifi_scan",
             "pet_wireless_wifi_forget",
-            "pet_wireless_ble_set_advertising",
         ):
             match = re.search(rf"{function}\([^)]*\)\n\{{(?P<body>.*?)\n\}}", source, re.S)
             self.assertIsNotNone(match)
@@ -90,6 +89,54 @@ class P4WirelessConfigurationTests(unittest.TestCase):
         self.assertIsNotNone(scan)
         self.assertIn("s_wifi_toggle_pending", scan.group("body"))
         self.assertIn("PET_WIRELESS_WIFI_CONNECTING", scan.group("body"))
+
+        ble_enable = re.search(
+            r"pet_wireless_ble_set_enabled\([^)]*\)\n\{(?P<body>.*?)\n\}", source, re.S
+        )
+        self.assertIsNotNone(ble_enable)
+        self.assertIn("s_ble_command_pending", ble_enable.group("body"))
+        self.assertIn("enqueue_ble(", ble_enable.group("body"))
+        self.assertIn("BLE_COMMAND_ENABLE", ble_enable.group("body"))
+        self.assertIn("BLE_COMMAND_DISABLE", ble_enable.group("body"))
+        self.assertIn("portMAX_DELAY", ble_enable.group("body"))
+
+    def test_ble_settings_toggle_controls_the_full_radio_lifecycle(self):
+        wireless = (P4 / "main" / "pet_wireless.c").read_text(encoding="utf-8")
+        ui = (P4 / "main" / "codex_pet_main.c").read_text(encoding="utf-8")
+        lifecycle = (P4 / "main" / "pet_wireless_ble_lifecycle.c").read_text(
+            encoding="utf-8"
+        )
+
+        stop_worker = re.search(
+            r"static void ble_host_stop_task\([^)]*\)\n\{(?P<body>.*?)\n\}",
+            wireless,
+            re.S,
+        )
+        self.assertIsNotNone(stop_worker)
+        self.assertIn("nimble_port_stop()", stop_worker.group("body"))
+        stop_wrapper = re.search(
+            r"static int32_t ble_host_stop\([^)]*\)\n\{(?P<body>.*?)\n\}",
+            wireless,
+            re.S,
+        )
+        self.assertIsNotNone(stop_wrapper)
+        self.assertNotIn("nimble_port_stop()", stop_wrapper.group("body"))
+        self.assertIn("s_ble_stop_completed", stop_wrapper.group("body"))
+        self.assertIn("s_ble_port_stop_completed", stop_wrapper.group("body"))
+        self.assertIn("PET_WIRELESS_BLE_STOP_TIMEOUT_MS", stop_wrapper.group("body"))
+        self.assertIn("xTaskCreatePinnedToCore(", stop_wrapper.group("body"))
+        self.assertIn("nimble_port_deinit()", wireless)
+        self.assertIn("esp_hosted_bt_controller_disable()", wireless)
+        self.assertIn("esp_hosted_bt_controller_deinit(release_memory)", wireless)
+        self.assertIn("ops->controller_deinit(context, false)", lifecycle)
+        self.assertIn("xTaskCreatePinnedToCore(", wireless)
+        self.assertIn("s_ble_host_stop_requested", wireless)
+        self.assertIn("s_ble_host_stop_error_latched", wireless)
+        self.assertIn("PET_WIRELESS_BLE_SYNC_TIMEOUT_US", wireless)
+        self.assertIn("ble_manager_task", wireless)
+        self.assertIn("pet_wireless_ble_set_enabled(enabled)", ui)
+        self.assertIn('snapshot.ble_enabled_requested ? "Disable" : "Retry"', ui)
+        self.assertNotIn("pet_wireless_ble_set_advertising", wireless)
 
 
 if __name__ == "__main__":

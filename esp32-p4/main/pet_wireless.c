@@ -1,4 +1,5 @@
 #include "pet_wireless.h"
+#include "pet_wireless_ble_lifecycle.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,6 +8,7 @@
 #include "esp_event.h"
 #include "esp_hosted.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -15,14 +17,18 @@
 #include "host/ble_hs.h"
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
 #define PET_WIRELESS_TASK_STACK 6144U
 #define PET_WIRELESS_TASK_PRIORITY 5U
+#define PET_WIRELESS_BLE_MANAGER_TASK_STACK 6144U
+#define PET_WIRELESS_BLE_MANAGER_TASK_PRIORITY 5U
+#define PET_WIRELESS_BLE_STOP_TASK_STACK 4096U
 #define PET_WIRELESS_SCAN_FETCH_LIMIT 32U
 #define PET_WIRELESS_RSSI_REFRESH_MS 3000U
+#define PET_WIRELESS_BLE_STOP_TIMEOUT_MS 5000U
+#define PET_WIRELESS_BLE_SYNC_TIMEOUT_US INT64_C(5000000)
 
 typedef enum {
     COMMAND_WIFI_ENABLE,
@@ -31,9 +37,12 @@ typedef enum {
     COMMAND_WIFI_SCAN_DONE,
     COMMAND_WIFI_CONNECT,
     COMMAND_WIFI_FORGET,
-    COMMAND_BLE_ADVERTISE,
-    COMMAND_BLE_STOP_ADVERTISING,
 } command_type_t;
+
+typedef enum {
+    BLE_COMMAND_ENABLE,
+    BLE_COMMAND_DISABLE,
+} ble_command_type_t;
 
 typedef struct {
     char ssid[PET_WIRELESS_MAX_SSID_LEN + 1U];
@@ -48,8 +57,14 @@ typedef struct {
 static portMUX_TYPE s_start_lock = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t s_snapshot_lock;
 static SemaphoreHandle_t s_ble_operation_lock;
+static SemaphoreHandle_t s_ble_host_stopped;
+static SemaphoreHandle_t s_ble_stop_completed;
 static QueueHandle_t s_command_queue;
+static QueueHandle_t s_ble_command_queue;
+static TaskHandle_t s_ble_host_task;
+static TaskHandle_t s_ble_stop_task;
 static pet_wireless_snapshot_t s_snapshot;
+static pet_wireless_ble_lifecycle_t s_ble_lifecycle;
 static bool s_started;
 static bool s_wifi_enabled;
 static bool s_wifi_toggle_pending;
@@ -58,6 +73,11 @@ static pet_wireless_wifi_state_t s_scan_previous_state;
 static bool s_ble_synced;
 static bool s_ble_advertising_requested;
 static bool s_ble_command_pending;
+static bool s_ble_host_stop_requested;
+static bool s_ble_port_stop_completed;
+static bool s_ble_host_stop_error_latched;
+static int32_t s_ble_host_stop_result;
+static int64_t s_ble_sync_deadline_us;
 static uint8_t s_ble_address_type;
 
 static void secure_zero(void *value, size_t size)
@@ -82,6 +102,15 @@ static pet_wireless_result_t enqueue(command_type_t type, connect_request_t *req
     }
     const command_t command = {.type = type, .connect_request = request};
     return xQueueSend(s_command_queue, &command, 0U) == pdTRUE ? PET_WIRELESS_OK
+                                                               : PET_WIRELESS_BUSY;
+}
+
+static pet_wireless_result_t enqueue_ble(ble_command_type_t type)
+{
+    if (s_ble_command_queue == NULL) {
+        return PET_WIRELESS_INVALID_STATE;
+    }
+    return xQueueSend(s_ble_command_queue, &type, 0U) == pdTRUE ? PET_WIRELESS_OK
                                                                : PET_WIRELESS_BUSY;
 }
 
@@ -146,8 +175,10 @@ static void ble_update_advertising_state(void)
     const int result = ble_start_advertising();
     xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
     if (result == 0) {
-        s_snapshot.ble = s_ble_advertising_requested && ble_gap_adv_active()
-            ? PET_WIRELESS_BLE_ADVERTISING : PET_WIRELESS_BLE_IDLE;
+        if (s_ble_advertising_requested) {
+            s_snapshot.ble = ble_gap_adv_active() ? PET_WIRELESS_BLE_ADVERTISING
+                                                  : PET_WIRELESS_BLE_IDLE;
+        }
     } else {
         s_snapshot.ble = PET_WIRELESS_BLE_ERROR;
         s_snapshot.last_error = result;
@@ -161,8 +192,10 @@ static int ble_gap_event(struct ble_gap_event *event, void *argument)
     switch (event->type) {
         case BLE_GAP_EVENT_CONNECT:
             xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
-            s_snapshot.ble = event->connect.status == 0 ? PET_WIRELESS_BLE_IDLE
-                                                        : PET_WIRELESS_BLE_ERROR;
+            if (s_snapshot.ble_enabled_requested) {
+                s_snapshot.ble = event->connect.status == 0 ? PET_WIRELESS_BLE_IDLE
+                                                            : PET_WIRELESS_BLE_ERROR;
+            }
             xSemaphoreGive(s_snapshot_lock);
             if (event->connect.status != 0 && ble_advertising_requested()) {
                 ble_update_advertising_state();
@@ -184,8 +217,11 @@ static void ble_on_reset(int reason)
 {
     xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
     s_ble_synced = false;
-    s_snapshot.ble = PET_WIRELESS_BLE_ERROR;
-    s_snapshot.last_error = reason;
+    s_ble_sync_deadline_us = 0;
+    if (s_snapshot.ble_enabled_requested) {
+        s_snapshot.ble = PET_WIRELESS_BLE_ERROR;
+        s_snapshot.last_error = reason;
+    }
     xSemaphoreGive(s_snapshot_lock);
 }
 
@@ -198,8 +234,12 @@ static void ble_on_sync(void)
 
     xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
     s_ble_synced = result == 0;
-    s_snapshot.ble = result == 0 ? PET_WIRELESS_BLE_IDLE : PET_WIRELESS_BLE_ERROR;
-    if (result != 0) {
+    s_ble_sync_deadline_us = 0;
+    const bool enable_requested = s_snapshot.ble_enabled_requested;
+    if (enable_requested) {
+        s_snapshot.ble = result == 0 ? PET_WIRELESS_BLE_IDLE : PET_WIRELESS_BLE_ERROR;
+    }
+    if (result != 0 && enable_requested) {
         s_snapshot.last_error = result;
     }
     const bool advertise = s_ble_advertising_requested;
@@ -214,29 +254,53 @@ static void ble_host_task(void *argument)
 {
     (void)argument;
     nimble_port_run();
-    nimble_port_freertos_deinit();
+    /* Let the manager delete the tracked host task before any later restart. */
+    xSemaphoreGive(s_ble_host_stopped);
+    vTaskSuspend(NULL);
 }
 
-static void initialize_ble(void)
+static void ble_host_stop_task(void *argument)
 {
-    xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
-    s_snapshot.ble = PET_WIRELESS_BLE_STARTING;
-    xSemaphoreGive(s_snapshot_lock);
+    (void)argument;
+    s_ble_host_stop_result = nimble_port_stop();
+    xSemaphoreGive(s_ble_stop_completed);
+    /* The BLE manager owns and joins both tracked task handles. */
+    vTaskSuspend(NULL);
+}
 
-    esp_err_t result = esp_hosted_bt_controller_init();
-    if (result == ESP_OK) {
-        result = esp_hosted_bt_controller_enable();
+static int32_t ble_controller_init(void *context)
+{
+    (void)context;
+    return esp_hosted_bt_controller_init();
+}
+
+static int32_t ble_controller_enable(void *context)
+{
+    (void)context;
+    return esp_hosted_bt_controller_enable();
+}
+
+static int32_t ble_host_init(void *context)
+{
+    (void)context;
+    return nimble_port_init();
+}
+
+static int32_t ble_host_start(void *context)
+{
+    (void)context;
+    if (s_ble_host_task != NULL || s_ble_stop_task != NULL ||
+        s_ble_host_stop_requested) {
+        return ESP_ERR_INVALID_STATE;
     }
-    if (result == ESP_OK) {
-        result = nimble_port_init();
+    while (xSemaphoreTake(s_ble_host_stopped, 0U) == pdTRUE) {
     }
-    if (result != ESP_OK) {
-        xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
-        s_snapshot.ble = PET_WIRELESS_BLE_ERROR;
-        s_snapshot.last_error = result;
-        xSemaphoreGive(s_snapshot_lock);
-        return;
+    while (xSemaphoreTake(s_ble_stop_completed, 0U) == pdTRUE) {
     }
+    s_ble_host_stop_requested = false;
+    s_ble_port_stop_completed = false;
+    s_ble_host_stop_error_latched = false;
+    s_ble_host_stop_result = ESP_OK;
 
     ble_hs_cfg.reset_cb = ble_on_reset;
     ble_hs_cfg.sync_cb = ble_on_sync;
@@ -244,14 +308,119 @@ static void initialize_ble(void)
     ble_svc_gatt_init();
     const int name_result = ble_svc_gap_device_name_set(PET_WIRELESS_DEVICE_NAME);
     if (name_result != 0) {
-        xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
-        s_snapshot.ble = PET_WIRELESS_BLE_ERROR;
-        s_snapshot.last_error = name_result;
-        xSemaphoreGive(s_snapshot_lock);
-        return;
+        return name_result;
     }
-    nimble_port_freertos_init(ble_host_task);
+    s_ble_host_task = NULL;
+    const BaseType_t created = xTaskCreatePinnedToCore(
+        ble_host_task, "pet_ble_host", NIMBLE_HS_STACK_SIZE, NULL,
+        configMAX_PRIORITIES - 4, &s_ble_host_task, NIMBLE_CORE);
+    return created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
+
+static int32_t ble_advertising_stop(void *context)
+{
+    (void)context;
+    int result = ESP_OK;
+    xSemaphoreTake(s_ble_operation_lock, portMAX_DELAY);
+    if (ble_gap_adv_active()) {
+        result = ble_gap_adv_stop();
+    }
+    xSemaphoreGive(s_ble_operation_lock);
+    return result == BLE_HS_EALREADY ? ESP_OK : result;
+}
+
+static int32_t ble_host_stop(void *context)
+{
+    (void)context;
+    const TickType_t wait_started = xTaskGetTickCount();
+    const TickType_t wait_limit = pdMS_TO_TICKS(PET_WIRELESS_BLE_STOP_TIMEOUT_MS);
+    if (s_ble_host_stop_error_latched) {
+        return s_ble_host_stop_result;
+    }
+    if (!s_ble_host_stop_requested) {
+        while (xSemaphoreTake(s_ble_stop_completed, 0U) == pdTRUE) {
+        }
+        s_ble_host_stop_result = ESP_ERR_INVALID_STATE;
+        s_ble_port_stop_completed = false;
+        s_ble_stop_task = NULL;
+        const BaseType_t created = xTaskCreatePinnedToCore(
+            ble_host_stop_task, "pet_ble_stop", PET_WIRELESS_BLE_STOP_TASK_STACK,
+            NULL, configMAX_PRIORITIES - 4, &s_ble_stop_task, NIMBLE_CORE);
+        if (created != pdPASS) {
+            s_ble_stop_task = NULL;
+            return ESP_ERR_NO_MEM;
+        }
+        s_ble_host_stop_requested = true;
+    }
+    if (!s_ble_port_stop_completed) {
+        if (xSemaphoreTake(s_ble_stop_completed, wait_limit) != pdTRUE) {
+            return ESP_ERR_TIMEOUT;
+        }
+        s_ble_port_stop_completed = true;
+        if (s_ble_stop_task != NULL) {
+            vTaskDelete(s_ble_stop_task);
+            s_ble_stop_task = NULL;
+        }
+    }
+
+    const int32_t result = s_ble_host_stop_result;
+    if (result != ESP_OK && result != BLE_HS_EALREADY) {
+        /*
+         * The NimBLE port stop API owns a static listener. It can return after
+         * that listener entered NimBLE's STOPPING list, so a second call could
+         * link the same node twice. Latch the rare failure until reboot.
+         */
+        s_ble_host_stop_error_latched = true;
+        return result;
+    }
+    if (result == ESP_OK) {
+        const TickType_t elapsed = xTaskGetTickCount() - wait_started;
+        const TickType_t remaining = elapsed < wait_limit ? wait_limit - elapsed : 0U;
+        if (xSemaphoreTake(s_ble_host_stopped, remaining) != pdTRUE) {
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+    if (s_ble_host_task != NULL) {
+        vTaskDelete(s_ble_host_task);
+        s_ble_host_task = NULL;
+    }
+    s_ble_host_stop_requested = false;
+    s_ble_port_stop_completed = false;
+    s_ble_host_stop_result = ESP_OK;
+    return ESP_OK;
+}
+
+static int32_t ble_host_deinit(void *context)
+{
+    (void)context;
+    return nimble_port_deinit();
+}
+
+static int32_t ble_controller_disable(void *context)
+{
+    (void)context;
+    const esp_err_t result = esp_hosted_bt_controller_disable();
+    return result == ESP_ERR_INVALID_STATE ? ESP_OK : result;
+}
+
+static int32_t ble_controller_deinit(void *context, bool release_memory)
+{
+    (void)context;
+    const esp_err_t result = esp_hosted_bt_controller_deinit(release_memory);
+    return result == ESP_ERR_INVALID_STATE ? ESP_OK : result;
+}
+
+static const pet_wireless_ble_lifecycle_ops_t s_ble_lifecycle_ops = {
+    .controller_init = ble_controller_init,
+    .controller_enable = ble_controller_enable,
+    .host_init = ble_host_init,
+    .host_start = ble_host_start,
+    .advertising_stop = ble_advertising_stop,
+    .host_stop = ble_host_stop,
+    .host_deinit = ble_host_deinit,
+    .controller_disable = ble_controller_disable,
+    .controller_deinit = ble_controller_deinit,
+};
 
 static void wifi_event_handler(void *argument, esp_event_base_t event_base, int32_t event_id,
                                void *event_data)
@@ -415,6 +584,94 @@ static void handle_connect(connect_request_t *request)
     xSemaphoreGive(s_snapshot_lock);
 }
 
+static void handle_ble_command(ble_command_type_t command)
+{
+    int32_t result = ESP_OK;
+    if (command == BLE_COMMAND_ENABLE) {
+        xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
+        const bool host_was_running = s_ble_lifecycle.host_running;
+        const bool restart_host = host_was_running && !s_ble_synced;
+        s_ble_advertising_requested = !restart_host;
+        xSemaphoreGive(s_snapshot_lock);
+
+        if (restart_host) {
+            result = pet_wireless_ble_lifecycle_disable(
+                &s_ble_lifecycle, &s_ble_lifecycle_ops, NULL);
+        }
+        if (result == ESP_OK) {
+            xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
+            s_ble_advertising_requested = true;
+            if (!host_was_running || restart_host) {
+                s_ble_synced = false;
+            }
+            xSemaphoreGive(s_snapshot_lock);
+            result = pet_wireless_ble_lifecycle_enable(
+                &s_ble_lifecycle, &s_ble_lifecycle_ops, NULL);
+        }
+
+        xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
+        const bool synced = s_ble_synced;
+        xSemaphoreGive(s_snapshot_lock);
+        if (result == ESP_OK && synced) {
+            ble_update_advertising_state();
+        }
+
+        xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
+        s_ble_command_pending = false;
+        if (result != ESP_OK) {
+            s_ble_sync_deadline_us = 0;
+            s_snapshot.ble = PET_WIRELESS_BLE_ERROR;
+            s_snapshot.last_error = result;
+        } else if (!s_ble_synced) {
+            s_ble_sync_deadline_us = esp_timer_get_time() + PET_WIRELESS_BLE_SYNC_TIMEOUT_US;
+        }
+        xSemaphoreGive(s_snapshot_lock);
+        return;
+    }
+
+    xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
+    s_ble_advertising_requested = false;
+    s_ble_synced = false;
+    s_ble_sync_deadline_us = 0;
+    xSemaphoreGive(s_snapshot_lock);
+    result = pet_wireless_ble_lifecycle_disable(
+        &s_ble_lifecycle, &s_ble_lifecycle_ops, NULL);
+    xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
+    s_ble_command_pending = false;
+    if (result == ESP_OK) {
+        s_snapshot.ble = PET_WIRELESS_BLE_DISABLED;
+    } else {
+        s_snapshot.ble = PET_WIRELESS_BLE_ERROR;
+        s_snapshot.last_error = result;
+    }
+    xSemaphoreGive(s_snapshot_lock);
+}
+
+static void check_ble_sync_timeout(void)
+{
+    const int64_t now = esp_timer_get_time();
+    xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
+    if (s_snapshot.ble == PET_WIRELESS_BLE_STARTING &&
+        pet_wireless_ble_sync_timed_out(now, s_ble_sync_deadline_us,
+                                        s_snapshot.ble_enabled_requested, s_ble_synced)) {
+        s_ble_sync_deadline_us = 0;
+        s_snapshot.ble = PET_WIRELESS_BLE_ERROR;
+        s_snapshot.last_error = ESP_ERR_TIMEOUT;
+    }
+    xSemaphoreGive(s_snapshot_lock);
+}
+
+static void ble_manager_task(void *argument)
+{
+    (void)argument;
+    ble_command_type_t command;
+    for (;;) {
+        if (xQueueReceive(s_ble_command_queue, &command, portMAX_DELAY) == pdTRUE) {
+            handle_ble_command(command);
+        }
+    }
+}
+
 static void handle_command(const command_t *command)
 {
     esp_err_t result = ESP_OK;
@@ -472,34 +729,6 @@ static void handle_command(const command_t *command)
             xSemaphoreGive(s_snapshot_lock);
             break;
         }
-        case COMMAND_BLE_ADVERTISE:
-            xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
-            s_ble_advertising_requested = true;
-            const bool synced = s_ble_synced;
-            xSemaphoreGive(s_snapshot_lock);
-            if (synced) {
-                ble_update_advertising_state();
-            }
-            xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
-            s_ble_command_pending = false;
-            xSemaphoreGive(s_snapshot_lock);
-            return;
-        case COMMAND_BLE_STOP_ADVERTISING:
-            xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
-            s_ble_advertising_requested = false;
-            xSemaphoreGive(s_snapshot_lock);
-            xSemaphoreTake(s_ble_operation_lock, portMAX_DELAY);
-            if (ble_gap_adv_active()) {
-                result = ble_gap_adv_stop();
-            }
-            xSemaphoreGive(s_ble_operation_lock);
-            xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
-            s_ble_command_pending = false;
-            if (result == ESP_OK) {
-                s_snapshot.ble = PET_WIRELESS_BLE_IDLE;
-            }
-            xSemaphoreGive(s_snapshot_lock);
-            break;
     }
 
     if (result != ESP_OK && result != ESP_ERR_WIFI_NOT_STARTED) {
@@ -525,8 +754,8 @@ static void wireless_task(void *argument)
         xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
         s_snapshot.backend = PET_WIRELESS_BACKEND_READY;
         s_snapshot.wifi = PET_WIRELESS_WIFI_DISABLED;
+        s_snapshot.ble = PET_WIRELESS_BLE_DISABLED;
         xSemaphoreGive(s_snapshot_lock);
-        initialize_ble();
     }
 
     command_t command;
@@ -537,6 +766,7 @@ static void wireless_task(void *argument)
         } else {
             refresh_connection();
         }
+        check_ble_sync_timeout();
     }
 }
 
@@ -552,12 +782,20 @@ pet_wireless_result_t pet_wireless_start(void)
 
     s_snapshot_lock = xSemaphoreCreateMutex();
     s_ble_operation_lock = xSemaphoreCreateMutex();
+    s_ble_host_stopped = xSemaphoreCreateBinary();
+    s_ble_stop_completed = xSemaphoreCreateBinary();
     s_command_queue = xQueueCreate(8U, sizeof(command_t));
+    s_ble_command_queue = xQueueCreate(2U, sizeof(ble_command_type_t));
     if (s_snapshot_lock == NULL || s_ble_operation_lock == NULL ||
-        s_command_queue == NULL) {
+        s_ble_host_stopped == NULL || s_ble_stop_completed == NULL ||
+        s_command_queue == NULL || s_ble_command_queue == NULL) {
         if (s_command_queue != NULL) {
             vQueueDelete(s_command_queue);
             s_command_queue = NULL;
+        }
+        if (s_ble_command_queue != NULL) {
+            vQueueDelete(s_ble_command_queue);
+            s_ble_command_queue = NULL;
         }
         if (s_snapshot_lock != NULL) {
             vSemaphoreDelete(s_snapshot_lock);
@@ -566,6 +804,14 @@ pet_wireless_result_t pet_wireless_start(void)
         if (s_ble_operation_lock != NULL) {
             vSemaphoreDelete(s_ble_operation_lock);
             s_ble_operation_lock = NULL;
+        }
+        if (s_ble_host_stopped != NULL) {
+            vSemaphoreDelete(s_ble_host_stopped);
+            s_ble_host_stopped = NULL;
+        }
+        if (s_ble_stop_completed != NULL) {
+            vSemaphoreDelete(s_ble_stop_completed);
+            s_ble_stop_completed = NULL;
         }
         taskENTER_CRITICAL(&s_start_lock);
         s_started = false;
@@ -576,22 +822,52 @@ pet_wireless_result_t pet_wireless_start(void)
     s_snapshot.backend = PET_WIRELESS_BACKEND_STARTING;
     s_snapshot.wifi = PET_WIRELESS_WIFI_DISABLED;
     s_snapshot.ble = PET_WIRELESS_BLE_DISABLED;
+    s_wifi_enabled = false;
+    s_wifi_toggle_pending = false;
+    s_wifi_forget_pending = false;
+    s_ble_synced = false;
+    s_ble_advertising_requested = false;
+    s_ble_command_pending = false;
+    s_ble_host_stop_requested = false;
+    s_ble_port_stop_completed = false;
+    s_ble_host_stop_error_latched = false;
+    s_ble_host_stop_result = ESP_OK;
+    s_ble_sync_deadline_us = 0;
+    s_ble_host_task = NULL;
+    s_ble_stop_task = NULL;
+    pet_wireless_ble_lifecycle_init(&s_ble_lifecycle);
 
+    TaskHandle_t ble_manager_handle = NULL;
+    if (xTaskCreate(ble_manager_task, "pet_ble_manager", PET_WIRELESS_BLE_MANAGER_TASK_STACK,
+                    NULL, PET_WIRELESS_BLE_MANAGER_TASK_PRIORITY,
+                    &ble_manager_handle) != pdPASS) {
+        goto start_failed;
+    }
     if (xTaskCreate(wireless_task, "pet_wireless", PET_WIRELESS_TASK_STACK, NULL,
                     PET_WIRELESS_TASK_PRIORITY, NULL) != pdPASS) {
-        s_snapshot.backend = PET_WIRELESS_BACKEND_ERROR;
-        vQueueDelete(s_command_queue);
-        s_command_queue = NULL;
-        vSemaphoreDelete(s_snapshot_lock);
-        s_snapshot_lock = NULL;
-        vSemaphoreDelete(s_ble_operation_lock);
-        s_ble_operation_lock = NULL;
-        taskENTER_CRITICAL(&s_start_lock);
-        s_started = false;
-        taskEXIT_CRITICAL(&s_start_lock);
-        return PET_WIRELESS_NO_MEMORY;
+        vTaskDelete(ble_manager_handle);
+        goto start_failed;
     }
     return PET_WIRELESS_OK;
+
+start_failed:
+    s_snapshot.backend = PET_WIRELESS_BACKEND_ERROR;
+    vQueueDelete(s_command_queue);
+    s_command_queue = NULL;
+    vQueueDelete(s_ble_command_queue);
+    s_ble_command_queue = NULL;
+    vSemaphoreDelete(s_snapshot_lock);
+    s_snapshot_lock = NULL;
+    vSemaphoreDelete(s_ble_operation_lock);
+    s_ble_operation_lock = NULL;
+    vSemaphoreDelete(s_ble_host_stopped);
+    s_ble_host_stopped = NULL;
+    vSemaphoreDelete(s_ble_stop_completed);
+    s_ble_stop_completed = NULL;
+    taskENTER_CRITICAL(&s_start_lock);
+    s_started = false;
+    taskEXIT_CRITICAL(&s_start_lock);
+    return PET_WIRELESS_NO_MEMORY;
 }
 
 bool pet_wireless_get_snapshot(pet_wireless_snapshot_t *snapshot)
@@ -746,7 +1022,7 @@ pet_wireless_result_t pet_wireless_wifi_forget(void)
     return result;
 }
 
-pet_wireless_result_t pet_wireless_ble_set_advertising(bool enabled)
+pet_wireless_result_t pet_wireless_ble_set_enabled(bool enabled)
 {
     if (!backend_ready()) {
         return PET_WIRELESS_INVALID_STATE;
@@ -754,27 +1030,45 @@ pet_wireless_result_t pet_wireless_ble_set_advertising(bool enabled)
     if (xSemaphoreTake(s_snapshot_lock, 0U) != pdTRUE) {
         return PET_WIRELESS_BUSY;
     }
-    bool advertising = s_snapshot.ble == PET_WIRELESS_BLE_ADVERTISING;
     if (s_ble_command_pending) {
         xSemaphoreGive(s_snapshot_lock);
         return PET_WIRELESS_BUSY;
     }
-    if (s_snapshot.ble != PET_WIRELESS_BLE_IDLE &&
-        s_snapshot.ble != PET_WIRELESS_BLE_ADVERTISING) {
+    if (s_snapshot.ble == PET_WIRELESS_BLE_STARTING ||
+        s_snapshot.ble == PET_WIRELESS_BLE_STOPPING) {
+        xSemaphoreGive(s_snapshot_lock);
+        return PET_WIRELESS_BUSY;
+    }
+    if (s_snapshot.ble != PET_WIRELESS_BLE_DISABLED &&
+        s_snapshot.ble != PET_WIRELESS_BLE_IDLE &&
+        s_snapshot.ble != PET_WIRELESS_BLE_ADVERTISING &&
+        s_snapshot.ble != PET_WIRELESS_BLE_ERROR) {
         xSemaphoreGive(s_snapshot_lock);
         return PET_WIRELESS_INVALID_STATE;
     }
-    if (enabled == advertising) {
+    if (s_snapshot.ble == PET_WIRELESS_BLE_ERROR && enabled) {
+        xSemaphoreGive(s_snapshot_lock);
+        return PET_WIRELESS_INVALID_STATE;
+    }
+    if (s_snapshot.ble != PET_WIRELESS_BLE_ERROR &&
+        enabled == s_snapshot.ble_enabled_requested) {
         xSemaphoreGive(s_snapshot_lock);
         return PET_WIRELESS_OK;
     }
+    const pet_wireless_ble_state_t previous_state = s_snapshot.ble;
+    const bool previous_request = s_snapshot.ble_enabled_requested;
     s_ble_command_pending = true;
+    s_snapshot.ble_enabled_requested = enabled;
+    s_snapshot.ble = enabled ? PET_WIRELESS_BLE_STARTING : PET_WIRELESS_BLE_STOPPING;
     xSemaphoreGive(s_snapshot_lock);
 
-    pet_wireless_result_t result = enqueue(
-        enabled ? COMMAND_BLE_ADVERTISE : COMMAND_BLE_STOP_ADVERTISING, NULL);
-    if (result != PET_WIRELESS_OK && xSemaphoreTake(s_snapshot_lock, 0U) == pdTRUE) {
+    pet_wireless_result_t result = enqueue_ble(enabled ? BLE_COMMAND_ENABLE
+                                                       : BLE_COMMAND_DISABLE);
+    if (result != PET_WIRELESS_OK) {
+        xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
         s_ble_command_pending = false;
+        s_snapshot.ble_enabled_requested = previous_request;
+        s_snapshot.ble = previous_state;
         xSemaphoreGive(s_snapshot_lock);
     }
     return result;

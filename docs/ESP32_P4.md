@@ -26,8 +26,8 @@ The vendor snapshot contains reference APIs for several of these peripherals,
 but it is not selected by the active CMake build. Their presence under `vendor/`
 must not be interpreted as an installed or enabled Codex Pet feature. The active
 application uses display, touch, USB Serial/JTAG, ESP32-C6 Wi-Fi station control,
-and BLE advertising only; BLE has no provisioning flow or custom application
-GATT service.
+and user-controlled BLE advertising only; BLE has no provisioning flow or custom
+application GATT service.
 
 ## Software stack
 
@@ -243,10 +243,22 @@ warning; a successful refresh clears that warning state.
 - Swipe up from Today, right from Settings, or down from Codex Usage to return
   Home. Settings and Usage also provide a Back control.
 - Settings starts the non-blocking C6 backend and exposes Wi-Fi enable, scan,
-  network selection, password entry for secured networks, forget, and BLE
-  advertising as `Codex Pet`. Password text is cleared after submission and is
-  never included in the UI status snapshot or logs. ESP-IDF stores the selected
-  station configuration in flash until Forget clears it.
+  network selection, password entry for secured networks, forget, and a BLE
+  Enable/Disable control. BLE starts disabled. Enable initializes the P4 NimBLE
+  host and C6 controller before advertising as `Codex Pet`; Disable stops
+  advertising, stops and deinitializes the host, then disables and deinitializes
+  the C6 controller while retaining memory for a later Enable. Password text is
+  cleared after submission and is never included in the UI status snapshot or
+  logs. ESP-IDF stores the selected station configuration in flash until Forget
+  clears it. If host startup does not synchronize within the bounded startup
+  window, Settings exposes Disable so partially initialized BLE layers can be
+  torn down; a failed shutdown exposes Retry. BLE lifecycle work runs separately
+  from the Wi-Fi command manager so a delayed stop does not stall Wi-Fi controls.
+  The blocking ESP-IDF stop runs in one tracked helper task. Settings waits at
+  most five seconds; after a timeout, Retry rejoins that same operation instead
+  of starting a second NimBLE stop. An immediate internal stop error is latched
+  to protect NimBLE's static listener; restart the device before trying BLE
+  again in that exceptional case.
 - Codex Usage shows latest-session tokens, today's tokens, today's cached-input
   ratio, and the last update time received from the desktop daemon. It marks
   data aging after five minutes and stale after 30 minutes.
@@ -273,9 +285,10 @@ After flashing, verify all of the following on the real board:
 8. Enable Wi-Fi, scan, connect to an open or WPA/WPA2 network, and confirm the
    Settings status and RSSI update. Use Forget and verify the saved network is
    cleared. Do not publish the SSID or password in test logs.
-9. Enable BLE advertising, use a second device to discover `Codex Pet`, then
-   stop advertising and confirm it disappears. This is BLE discovery only;
-   Classic Bluetooth is not supported.
+9. Enable BLE, use a second device to discover `Codex Pet`, then Disable it and
+   confirm it disappears. Enable it again and confirm it reappears. Repeat the
+   cycle while Wi-Fi is connected and verify Wi-Fi remains connected. This is
+   BLE discovery only; Classic Bluetooth is not supported.
 10. An upward swipe opens Codex Usage and shows the values sent by the desktop
     daemon. A downward swipe or Back returns Home. Leave the daemon stopped
     long enough to observe aging at five minutes and stale at 30 minutes.
@@ -283,8 +296,8 @@ After flashing, verify all of the following on the real board:
     return the exact acknowledgements above.
 12. Time continues advancing between minute syncs; a failed weather or usage
     refresh does not block lifecycle or clock updates.
-13. The backlight and scaled animation remain stable while Wi-Fi scans and BLE
-    advertises continuously.
+13. The backlight and scaled animation remain stable while Wi-Fi scans, BLE
+    advertises continuously, and BLE is repeatedly disabled and enabled.
 14. Confirm no camera indicator or stream activates; the application contains no
    camera initialization, but this remains a physical acceptance check.
 
@@ -307,7 +320,8 @@ selection is ambiguous. The maintained host environment is macOS.
 The board/display route was previously clean-built and flashed to an ESP32-P4
 revision v1.3 unit, and its written image hashes were verified. The full v2
 animation asset has also been linked locally. The Settings and Codex Usage
-surfaces, P4/C6 SDIO link, Wi-Fi connection, BLE advertising, updated Serial
-exchange, and concurrent display/touch stability still require the physical
-checks above. If the stock ST7701 route becomes unreliable, migrate to the
-hardware-tested manual DPI bring-up rather than changing timings at random.
+surfaces, P4/C6 SDIO link, Wi-Fi connection, repeated BLE controller teardown and
+restart, BLE advertising, updated Serial exchange, and concurrent display/touch
+stability still require the physical checks above. If the stock ST7701 route
+becomes unreliable, migrate to the hardware-tested manual DPI bring-up rather
+than changing timings at random.

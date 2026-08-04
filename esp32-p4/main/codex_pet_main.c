@@ -508,6 +508,7 @@ static const char *wireless_ble_label(pet_wireless_ble_state_t state)
     case PET_WIRELESS_BLE_STARTING: return "Bluetooth LE starting";
     case PET_WIRELESS_BLE_IDLE: return "Bluetooth LE ready";
     case PET_WIRELESS_BLE_ADVERTISING: return "Advertising as Codex Pet";
+    case PET_WIRELESS_BLE_STOPPING: return "Bluetooth LE stopping";
     case PET_WIRELESS_BLE_ERROR: return "Bluetooth LE unavailable";
     default: return "Bluetooth LE disabled";
     }
@@ -615,8 +616,8 @@ static void update_wireless_labels_locked(void)
     bool connect_available = scan_available &&
         snapshot.wifi != PET_WIRELESS_WIFI_CONNECTED;
     bool ble_available = backend_ready &&
-        (snapshot.ble == PET_WIRELESS_BLE_IDLE ||
-         snapshot.ble == PET_WIRELESS_BLE_ADVERTISING);
+        snapshot.ble != PET_WIRELESS_BLE_STARTING &&
+        snapshot.ble != PET_WIRELESS_BLE_STOPPING;
     if (wifi_available) lv_obj_remove_state(ui.settings_wifi_button, LV_STATE_DISABLED);
     else lv_obj_add_state(ui.settings_wifi_button, LV_STATE_DISABLED);
     if (scan_available) lv_obj_remove_state(ui.settings_scan_button, LV_STATE_DISABLED);
@@ -659,8 +660,12 @@ static void update_wireless_labels_locked(void)
     lv_label_set_text(ui.settings_scan_button_label,
                       snapshot.wifi == PET_WIRELESS_WIFI_SCANNING ? "Scanning" : "Scan");
     lv_label_set_text(ui.settings_ble, wireless_ble_label(snapshot.ble));
-    lv_label_set_text(ui.settings_ble_button_label,
-                      snapshot.ble == PET_WIRELESS_BLE_ADVERTISING ? "Stop" : "Advertise");
+    const char *ble_button_text = snapshot.ble == PET_WIRELESS_BLE_ERROR
+                                      ? (snapshot.ble_enabled_requested ? "Disable" : "Retry")
+                                  : snapshot.ble == PET_WIRELESS_BLE_STARTING ? "Starting"
+                                  : snapshot.ble == PET_WIRELESS_BLE_STOPPING ? "Stopping"
+                                  : snapshot.ble_enabled_requested ? "Disable" : "Enable";
+    lv_label_set_text(ui.settings_ble_button_label, ble_button_text);
 
     if (snapshot.ssid[0] != '\0') {
         lv_obj_remove_flag(ui.settings_forget_button, LV_OBJ_FLAG_HIDDEN);
@@ -1158,8 +1163,9 @@ static void wifi_forget_event(lv_event_t *event)
 static void ble_toggle_event(lv_event_t *event)
 {
     if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
-    bool advertising = ui.wireless.ble == PET_WIRELESS_BLE_ADVERTISING;
-    report_wireless_action_result(pet_wireless_ble_set_advertising(!advertising));
+    bool enabled = ui.wireless.ble == PET_WIRELESS_BLE_ERROR
+        ? false : !ui.wireless.ble_enabled_requested;
+    report_wireless_action_result(pet_wireless_ble_set_enabled(enabled));
 }
 
 static void hide_password_dialog_locked(void)
@@ -1278,11 +1284,11 @@ static void create_settings_page(void)
 
     create_label(ui.settings_page, "BLUETOOTH LE", &lv_font_montserrat_14,
                  lv_color_hex(0x82909E), 24, 690);
-    ui.settings_ble = create_label(ui.settings_page, "Bluetooth LE starting",
+    ui.settings_ble = create_label(ui.settings_page, "Bluetooth LE disabled",
                                    &lv_font_montserrat_14,
                                    lv_color_hex(0xDDE6EF), 24, 718);
     ui.settings_ble_button = create_button(
-        ui.settings_page, "Advertise", 312, 704, 144, ble_toggle_event, NULL,
+        ui.settings_page, "Enable", 312, 704, 144, ble_toggle_event, NULL,
         &ui.settings_ble_button_label);
     lv_obj_add_state(ui.settings_wifi_button, LV_STATE_DISABLED);
     lv_obj_add_state(ui.settings_scan_button, LV_STATE_DISABLED);

@@ -34,6 +34,7 @@ typedef enum {
     PET_WIRELESS_BLE_STARTING,
     PET_WIRELESS_BLE_IDLE,
     PET_WIRELESS_BLE_ADVERTISING,
+    PET_WIRELESS_BLE_STOPPING,
     PET_WIRELESS_BLE_ERROR,
 } pet_wireless_ble_state_t;
 
@@ -56,6 +57,7 @@ typedef struct {
     pet_wireless_backend_state_t backend;
     pet_wireless_wifi_state_t wifi;
     pet_wireless_ble_state_t ble;
+    bool ble_enabled_requested;
     char ssid[PET_WIRELESS_MAX_SSID_LEN + 1U];
     int8_t rssi;
     pet_wireless_access_point_t scan_results[PET_WIRELESS_MAX_SCAN_RESULTS];
@@ -73,7 +75,7 @@ pet_wireless_result_t pet_wireless_wifi_set_enabled(bool enabled);
 pet_wireless_result_t pet_wireless_wifi_scan(void);
 pet_wireless_result_t pet_wireless_wifi_connect(const char *ssid, const char *password);
 pet_wireless_result_t pet_wireless_wifi_forget(void);
-pet_wireless_result_t pet_wireless_ble_set_advertising(bool enabled);
+pet_wireless_result_t pet_wireless_ble_set_enabled(bool enabled);
 
 /* Pure helpers used by the firmware and host tests. */
 bool pet_wireless_credentials_valid(const char *ssid, const char *password);

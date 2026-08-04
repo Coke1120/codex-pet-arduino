@@ -37,7 +37,7 @@ is an implementation detail, not a compatibility commitment.
 - Swipe-left Settings page for Wi-Fi and BLE controls
 - Swipe-up Codex Usage page for privacy-limited local token aggregates
 - Wi-Fi station scan/connect/forget through the onboard ESP32-C6
-- BLE advertising as `Codex Pet` (BLE only; Classic Bluetooth is not supported)
+- BLE host/controller enable/disable and `Codex Pet` advertising (BLE only; no Classic Bluetooth)
 - USB Serial lifecycle, clock, weather, and usage synchronization
 - Persistent macOS LaunchAgent with official Codex lifecycle hooks
 - Local-only generated pet artwork excluded from Git
@@ -60,11 +60,17 @@ installs, initializes, tests, or uses it.
 | Lithium battery path | Battery connector and charger/power circuit | Hardware-only: no battery percentage, charge-state, sleep, or power-management UI |
 | RS-485 and expansion I/O | RS-485, UART, I2C, and GPIO connectors | Unassigned: no Codex Pet protocol, driver setup, or UI controls |
 
-Wi-Fi and BLE are enabled with deliberately narrower scope. Wi-Fi provides
+Wi-Fi and BLE support is deliberately narrow. Wi-Fi provides
 station enable, scan, connect, and forget controls, but Mac synchronization still
-uses USB Serial. BLE advertises `Codex Pet`; there is no BLE provisioning flow or
-custom application GATT service. Camera and microphone inactivity are privacy
-boundaries: the current application never reads either sensor.
+uses USB Serial. BLE starts disabled; enabling it initializes the P4 NimBLE host
+and C6 controller and advertises `Codex Pet`, while disabling it tears both
+layers down without releasing the memory needed for a later restart. The
+potentially blocking NimBLE stop is supervised by a dedicated task, so Settings
+returns an error after five seconds instead of blocking Wi-Fi; Retry joins the
+same in-flight stop rather than starting a second teardown. There is
+no BLE provisioning flow or custom application GATT service. Camera and
+microphone inactivity are privacy boundaries: the current application never
+reads either sensor.
 
 ## Interaction model
 
@@ -280,9 +286,10 @@ project's macOS-only host support policy.
 
 The board/display path has been built, flashed, and hash-verified on an
 ESP32-P4 revision v1.3 unit. The full v2 asset has also linked successfully.
-Settings, Codex Usage, P4/C6 SDIO, Wi-Fi, BLE advertising, updated Serial
-exchange, and continuous display/touch stability still require the complete
-physical checklist in [`docs/ESP32_P4.md`](docs/ESP32_P4.md).
+Settings, Codex Usage, P4/C6 SDIO, Wi-Fi, repeated BLE enable/disable and
+advertising, updated Serial exchange, and continuous display/touch stability
+still require the complete physical checklist in
+[`docs/ESP32_P4.md`](docs/ESP32_P4.md).
 
 ## Contributing and security
 

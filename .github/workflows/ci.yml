@@ -69,6 +69,8 @@ jobs:
           /tmp/pet_interaction_test
           env PATH=/usr/bin:/bin /usr/bin/cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=undefined tests/test_pet_wireless.c esp32-p4/main/pet_wireless_model.c -Iesp32-p4/main -o /tmp/pet_wireless_test
           /tmp/pet_wireless_test
+          env PATH=/usr/bin:/bin /usr/bin/cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=undefined tests/test_pet_wireless_ble_lifecycle.c esp32-p4/main/pet_wireless_ble_lifecycle.c -Iesp32-p4/main -o /tmp/pet_wireless_ble_lifecycle_test
+          /tmp/pet_wireless_ble_lifecycle_test
           riscv32-esp-elf-nm -S --size-sort esp32-p4/build/codex_pet_jc4880p443c.elf | grep -Eq '^[[:xdigit:]]+ 00679e60 [rR] pet_size_fixture_payload$'
           riscv32-esp-elf-nm -S --size-sort esp32-p4/build/codex_pet_jc4880p443c.elf | grep -Eq '^[[:xdigit:]]+ 000007fc [rR] pet_size_fixture_images$'
           python -c "from pathlib import Path; size=Path('esp32-p4/build/codex_pet_jc4880p443c.bin').stat().st_size; limit=0xF70000; assert size <= limit - 0x80000, f'firmware leaves less than 512 KiB margin: {size}/{limit}'"
