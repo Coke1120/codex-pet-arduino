@@ -79,6 +79,14 @@ class VendorBspTests(unittest.TestCase):
                 )
                 self.assertIn(version, metadata)
 
+    def test_lvgl_refresh_period_is_tuned_for_page_slides(self) -> None:
+        expected = "CONFIG_LV_DEF_REFR_PERIOD=10"
+        sdkconfig_defaults = (ROOT / "esp32-p4" / "sdkconfig.defaults").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(expected, sdkconfig_defaults)
+
     def test_model_specific_board_contract_is_preserved(self) -> None:
         config = (BOARD_ROOT / "config.h").read_text(encoding="utf-8")
         implementation = (BOARD_ROOT / "jc4880p443.cc").read_text(encoding="utf-8")

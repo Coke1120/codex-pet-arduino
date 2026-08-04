@@ -827,13 +827,17 @@ static void set_pet_render_top_locked(int32_t top)
 {
     int32_t rendered_height = PET_FRAME_H * PET_FRAME_SCALE / LV_SCALE_NONE;
     int32_t transform_expansion = (rendered_height - PET_FRAME_H) / 2;
-    lv_obj_align(ui.image, LV_ALIGN_TOP_MID, 0, top + transform_expansion);
+    lv_obj_set_y(ui.image, top + transform_expansion);
 }
 
 static void set_panel_progress_locked(int32_t progress)
 {
     if (progress < 0) progress = 0;
     if (progress > PET_PANEL_PROGRESS_MAX) progress = PET_PANEL_PROGRESS_MAX;
+    if (progress == ui.panel_progress) return;
+
+    bool pet_was_hidden = ui.panel_progress > PET_PANEL_PROGRESS_MAX / 3;
+    bool pet_should_hide = progress > PET_PANEL_PROGRESS_MAX / 3;
     ui.panel_progress = progress;
 
     int32_t panel_y = -TODAY_PANEL_HEIGHT +
@@ -847,12 +851,14 @@ static void set_panel_progress_locked(int32_t progress)
                                    PET_PANEL_PROGRESS_MAX);
     lv_obj_set_style_opa(ui.top_bar, home_opa, 0);
     lv_obj_set_style_opa(ui.status_card, home_opa, 0);
-    if (progress > PET_PANEL_PROGRESS_MAX / 3) {
-        lv_obj_add_flag(ui.pet_tap_zone, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(ui.status_card, LV_OBJ_FLAG_CLICKABLE);
-    } else {
-        lv_obj_remove_flag(ui.pet_tap_zone, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(ui.status_card, LV_OBJ_FLAG_CLICKABLE);
+    if (pet_was_hidden != pet_should_hide) {
+        if (pet_should_hide) {
+            lv_obj_add_flag(ui.pet_tap_zone, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(ui.status_card, LV_OBJ_FLAG_CLICKABLE);
+        } else {
+            lv_obj_remove_flag(ui.pet_tap_zone, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(ui.status_card, LV_OBJ_FLAG_CLICKABLE);
+        }
     }
 
     if (progress == PET_PANEL_PROGRESS_MAX && ui.base_action == ACTION_IDLE &&
@@ -931,6 +937,7 @@ static void set_settings_progress_locked(int32_t progress)
 {
     if (progress < 0) progress = 0;
     if (progress > PET_PANEL_PROGRESS_MAX) progress = PET_PANEL_PROGRESS_MAX;
+    if (progress == ui.settings_progress) return;
     ui.settings_progress = progress;
     lv_obj_set_x(ui.settings_page, DISPLAY_WIDTH -
                  DISPLAY_WIDTH * progress / PET_PANEL_PROGRESS_MAX);
@@ -940,6 +947,7 @@ static void set_usage_progress_locked(int32_t progress)
 {
     if (progress < 0) progress = 0;
     if (progress > PET_PANEL_PROGRESS_MAX) progress = PET_PANEL_PROGRESS_MAX;
+    if (progress == ui.usage_progress) return;
     ui.usage_progress = progress;
     lv_obj_set_y(ui.usage_page, DISPLAY_HEIGHT -
                  DISPLAY_HEIGHT * progress / PET_PANEL_PROGRESS_MAX);
@@ -1514,6 +1522,7 @@ static void create_ui(void)
     lv_image_set_src(ui.image, PET_FRAMES[PET_FRAME_IDLE_FIRST]);
     lv_image_set_scale(ui.image, PET_FRAME_SCALE);
     lv_image_set_antialias(ui.image, false);
+    lv_obj_set_align(ui.image, LV_ALIGN_TOP_MID);
     set_pet_render_top_locked(PET_NORMAL_TOP);
     lv_obj_remove_flag(ui.image, LV_OBJ_FLAG_CLICKABLE);
 
