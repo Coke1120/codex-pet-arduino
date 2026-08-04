@@ -2,7 +2,7 @@
 
 The Python hook and Serial daemon connect Codex on macOS to the
 JC4880P443C-I-W over USB Serial. The ESP32-P4 negotiates lifecycle, clock, Hong
-Kong weather, and local Codex Usage synchronization before the daemon starts
+Kong weather, and CodexBar quota synchronization before the daemon starts
 optional data workers.
 
 The basic `codex_pet_bridge.py` is intentionally manual: it sends only the state supplied through `--state`, `--interactive`, or `--stdin`. It does not inspect Codex Desktop automatically.
@@ -11,8 +11,8 @@ For direct reflection, this repository uses the official Codex lifecycle hooks d
 
 ```text
 Codex lifecycle event ──▶ codex_pet_hook.py ──▶ lifecycle state ─┐
-                                                                   ├─▶ daemon ──▶ USB Serial ──▶ Pet
-~/.codex/sessions ──▶ codex_pet_usage.py ──▶ token aggregates ─┘
+CodexBar OAuth CLI ──▶ codex_pet_usage.py ──▶ numeric quota ─────┼─▶ daemon ──▶ USB Serial ──▶ Pet
+legacy ~/.codex/sessions ──▶ local token aggregates ─────────────┘
 ```
 
 ## State mapping
@@ -41,32 +41,42 @@ The hook stores only a hashed session key, mapped state, event name, and timesta
 
 It does **not** store prompts, assistant messages, tool output, transcript paths, or working-directory paths.
 
-## Codex Usage data
+## Codex quota data
 
-By default, the daemon reads Codex's local session files under
-`~/.codex/sessions` on macOS. It accepts only JSONL `event_msg`
-records whose payload type is `token_count`, then sends these five integers to a
-P4 that advertises the `usage` capability:
+For a P4 that advertises `quota`, the daemon runs CodexBar's supported machine
+interface:
 
-- total tokens reported by the newest session event
-- sum of today's per-event token deltas
-- today's cached input tokens
-- today's input tokens, used with the cached count to calculate the displayed ratio
-- the local update time as a Unix timestamp
+```text
+codexbar --provider codex --source oauth --format json --json-only
+```
 
-The reader does not serialize prompt text, assistant messages, tool calls, tool
-output, paths, or arbitrary JSON fields. Its cache contains only the same five
-aggregate integers. These values describe locally recorded Codex activity; they
-are **not** a subscription quota, billing balance, or account-wide usage report.
+CodexBar owns authentication and provider access. The adapter converts its
+five-hour and weekly used percentages to remaining percentages, then sends only
+six numeric fields: both remaining percentages and reset epochs, credits in
+tenths, and the update epoch. Missing windows use `-1` and a zero reset epoch.
+Account identity, email, prompts, transcripts, and tool output never enter the
+Serial command or numeric cache. Refreshes are minute-gated and preserve the
+last good cache at
+`~/Library/Application Support/CodexPet/codexbar-quota-cache.json`.
 
-Today's totals follow the computer's local calendar day. The daemon refreshes
-the aggregate at most once per minute and preserves the last good cache if a
-session file is temporarily unreadable. The P4 marks the display aging after
-five minutes and stale after 30 minutes. An empty or missing sessions directory
-produces zero aggregates rather than guessing account usage. The default cache
-is `~/Library/Application Support/CodexPet/usage-cache.json`.
+The legacy `usage` capability remains for older firmware. Only when `quota` is
+absent does the daemon read local `~/.codex/sessions` `token_count` events and
+send aggregate integers. `--sessions-root` applies only to that fallback. Those
+local aggregates are not subscription quota or billing data.
 
-## 1. Install Python dependency
+## 1. Install CodexBar and the Python dependency
+
+Install and sign in to [CodexBar](https://github.com/steipete/CodexBar). The
+daemon accepts either the `codexbar` executable on `PATH` or the helper bundled
+inside `CodexBar.app`. Confirm its Codex provider works before starting the
+daemon:
+
+```bash
+codexbar --provider codex --source oauth --format json --json-only
+```
+
+Treat that terminal output as private because CodexBar may include account
+identity fields; Codex Pet filters them before caching or sending data.
 
 ```bash
 cd /path/to/codex-pet-dev-board/mac
@@ -95,7 +105,16 @@ Run the persistent bridge manually:
 If more than one plausible Espressif device is attached, compare the macOS port
 list before and after reconnecting the P4 native USB connector, confirm the chip,
 then pass its exact `/dev/cu.*` path using `--port`.
-The daemon re-sends the selected state every five seconds by default so a board reset cannot silently desynchronize the display. Use `--heartbeat SECONDS` to choose another positive interval. On a P4 that advertises `clock`, `weather`, and `usage`, it also sends local time once per minute, fetches Hong Kong weather in a background thread every 15 minutes, and reads local token aggregates at most once per minute. Each worker starts only after capability negotiation and never during `--dry-run`. Use `--no-weather` to disable network weather retrieval or `--no-usage` to disable local session scanning. Use `--sessions-root PATH` when Codex stores session JSONL files somewhere other than `~/.codex/sessions`:
+The daemon re-sends the selected state every five seconds by default so a board
+reset cannot silently desynchronize the display. Use `--heartbeat SECONDS` to
+choose another positive interval. On a P4 that advertises `clock`, `weather`,
+and `quota`, it also sends local time once per minute, fetches Hong Kong weather
+in a background thread every 15 minutes, and refreshes CodexBar quota at most
+once per minute. Each worker starts only after capability negotiation and never
+during `--dry-run`. Use `--no-weather` to disable weather retrieval or
+`--no-usage` to disable both CodexBar quota and legacy local usage sync. Use
+`--sessions-root PATH` only when an older P4 lacks `quota` and Codex stores its
+session JSONL somewhere other than `~/.codex/sessions`:
 
 ```bash
 .venv/bin/python codex_pet_daemon.py \
@@ -104,7 +123,7 @@ The daemon re-sends the selected state every five seconds by default so a board 
 ```
 
 An incomplete capability response is retried instead of silently downgrading the
-v2 board. Weather and usage
+v2 board. Weather, quota, and legacy usage
 failures retain their last good caches and are reported once per distinct error
 until a successful refresh.
 
@@ -156,8 +175,9 @@ migrates the former `org.example.codex-pet` LaunchAgent so only one daemon can
 own the Serial port. The installed LaunchAgent uses the default
 `~/.codex/sessions` root and enables usage collection when the P4 advertises it;
 `--no-usage` and `--sessions-root` are manual daemon options, not installer
-flags. The daemon connection log identifies `clock, usage, weather` after a
-successful P4 capability handshake.
+flags. The daemon connection log identifies `clock, quota, usage, weather`
+after a successful current-firmware capability handshake. CodexBar itself is
+not copied into the runtime and must remain installed separately.
 
 To remove it:
 
@@ -178,9 +198,9 @@ With the daemon running and the JC4880P443C-I-W connected:
 3. Let Codex run tests, lint, review, or type checking: `review`.
 4. Trigger an approval request when the selected permission mode supports it: `waiting`.
 5. Let the turn finish: `idle`.
-6. On the P4 Home screen, swipe up and verify latest-session tokens, today's
-   total, cached-input ratio, and update time. Compare only against local
-   `token_count` events, not an account quota.
+6. On the P4 Home screen, swipe up and compare five-hour/weekly remaining,
+   reset times, and credits against CodexBar. A missing CodexBar window must
+   display as unavailable rather than `100%`.
 
 Run the local regression tests after changes:
 
@@ -195,6 +215,9 @@ PYTHONPYCACHEPREFIX=/tmp/codex-pet-pycache \
 - Codex exposes lifecycle events, not a stable public API for the decorative on-screen pet's exact animation frame. This integration reflects agent activity states rather than scraping UI pixels.
 - `PermissionRequest` appears only when Codex actually asks for approval. A configuration such as `approval_policy = "never"` will not emit that event.
 - Hook definitions are security-sensitive executable configuration. Review and trust are intentionally user-controlled in Codex; do not bypass that trust flow for normal desktop use.
-- Codex session JSONL is a local implementation surface, not a stable billing
-  API. If its `token_count` schema changes, the reader keeps the last good
-  aggregate and reports a warning instead of reading unrelated transcript data.
+- CodexBar does not yet expose a supported command for reading the menu-bar
+  app's persisted cache, so the daemon invokes the same official provider stack
+  through its OAuth JSON CLI. If that command fails, the last numeric snapshot
+  remains visible and the daemon emits a deduplicated warning.
+- Codex session JSONL remains only as compatibility input for firmware without
+  `quota`; it is not a stable billing API.

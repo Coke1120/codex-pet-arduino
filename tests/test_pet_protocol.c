@@ -50,6 +50,15 @@ int main(void)
     assert(command.data.usage.today_input_tokens == INT64_MAX);
     assert(command.data.usage.updated_epoch == PET_MAX_UNIX_EPOCH);
 
+    command = parse_ok("quota -1 0 52 1786173679 0 1785853587");
+    assert(command.type == PET_COMMAND_QUOTA);
+    assert(command.data.quota.session_remaining_percent == -1);
+    assert(command.data.quota.session_reset_epoch == 0);
+    assert(command.data.quota.weekly_remaining_percent == 52);
+    assert(command.data.quota.weekly_reset_epoch == 1786173679LL);
+    assert(command.data.quota.credits_remaining_tenths == 0);
+    assert(command.data.quota.updated_epoch == 1785853587LL);
+
     assert(pet_protocol_parse("", &command) == PET_PROTOCOL_EMPTY);
     assert(pet_protocol_parse("sleeping", &command) == PET_PROTOCOL_UNKNOWN);
     assert(pet_protocol_parse("clock 1", &command) == PET_PROTOCOL_INVALID_FORMAT);
@@ -67,6 +76,11 @@ int main(void)
     assert(pet_protocol_parse("usage -1 2 3 4 5", &command) == PET_PROTOCOL_OUT_OF_RANGE);
     assert(pet_protocol_parse("usage 1 2 5 4 5", &command) == PET_PROTOCOL_OUT_OF_RANGE);
     assert(pet_protocol_parse("usage 1 2 3 4 253402250400", &command) == PET_PROTOCOL_OUT_OF_RANGE);
+    assert(pet_protocol_parse("quota 50 1 60 2 3", &command) == PET_PROTOCOL_INVALID_FORMAT);
+    assert(pet_protocol_parse("quota 101 1 60 2 3 4", &command) == PET_PROTOCOL_OUT_OF_RANGE);
+    assert(pet_protocol_parse("quota -1 1 60 2 3 4", &command) == PET_PROTOCOL_OUT_OF_RANGE);
+    assert(pet_protocol_parse("quota 50 1 -1 2 3 4", &command) == PET_PROTOCOL_OUT_OF_RANGE);
+    assert(pet_protocol_parse("quota 50 1 60 2 -2 4", &command) == PET_PROTOCOL_OUT_OF_RANGE);
 
     assert(strcmp(pet_weather_condition_label(PET_WEATHER_PARTLY_CLOUDY), "Partly cloudy") == 0);
     assert(pet_weather_condition_is_critical(PET_WEATHER_THUNDER));

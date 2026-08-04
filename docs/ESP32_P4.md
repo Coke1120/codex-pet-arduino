@@ -155,8 +155,8 @@ Expected boot lines include:
 ```text
 Codex Pet ESP32-P4 ready
 Board: JC4880P443C-I-W
-Protocol: v2 lifecycle clock weather today-v1 usage-v1 wireless settings-v1
-Commands: idle running waiting review ping status capabilities clock weather usage
+Protocol: v2 lifecycle clock weather today-v1 usage-v1 quota-v1 codexbar-v1 wireless settings-v1
+Commands: idle running waiting review ping status capabilities clock weather usage quota
 ```
 
 ## Build and flash the ESP32-C6 slave
@@ -180,6 +180,11 @@ protocol port, and reset the board.
 The C6 flash connector and download-mode controls are board-specific. Verify the
 C6 with `chip_id` before `flash`; an image written to the wrong chip can prevent
 the display firmware or wireless co-processor from booting.
+
+After the matching C6 image passes write verification, enable
+`Codex Pet → Start the ESP32-C6 wireless backend` in the P4 `menuconfig`, rebuild
+the P4, and repeat the P4 boot/display/protocol checks before testing either
+radio. The default P4 configuration intentionally keeps this option disabled.
 
 ## Protocol verification
 
@@ -207,21 +212,25 @@ The P4 advertises optional extensions before the daemon uses them:
 
 ```text
 capabilities
-  -> CAPABILITIES 2 lifecycle clock weather today-v1 usage usage-v1 wireless settings-v1
+  -> CAPABILITIES 2 lifecycle clock weather today-v1 usage usage-v1 quota quota-v1 codexbar-v1 wireless settings-v1
 clock <unix_epoch> <utc_offset_seconds>
   -> OK CLOCK
 weather <current_c> <low_c> <high_c> <rain_pct> <condition> <updated_epoch>
   -> OK WEATHER
 usage <latest_session_tokens> <today_tokens> <today_cached_input_tokens> <today_input_tokens> <updated_epoch>
   -> OK USAGE
+quota <five_hour_remaining_pct> <five_hour_reset_epoch> <weekly_remaining_pct> <weekly_reset_epoch> <credits_tenths> <updated_epoch>
+  -> OK QUOTA
 ```
 
 Temperatures accept one decimal place. Conditions are `clear`,
 `partly_cloudy`, `cloudy`, `fog`, `rain`, `snow`, `thunder`, or `unknown`.
 An incomplete capability response is treated as a retryable connection failure
-so a transient P4 response delay cannot silently disable v2 extensions. `usage`
-contains non-negative token counters and a Unix
-update timestamp; it is not an account or subscription quota.
+so a transient P4 response delay cannot silently disable v2 extensions. `quota`
+uses `-1` with a zero reset epoch for an unavailable window or credit balance.
+CodexBar remains responsible for authentication; no account identity is sent to
+the P4. `usage` remains as a compatibility command for non-negative local token
+counters and is not account quota data.
 
 The daemon obtains Hong Kong data from the no-key
 [Open-Meteo forecast API](https://open-meteo.com/en/docs), refreshes it every 15
@@ -233,16 +242,21 @@ weather retrieval. Weather data is attributed to Open-Meteo in the Today Panel.
 Fetch failures retain the last cached value and produce a deduplicated daemon
 warning; a successful refresh clears that warning state.
 
+For a board that advertises `quota`, the daemon invokes CodexBar's official
+Codex OAuth JSON CLI at most once per minute and sends only numeric quota fields.
+It preserves the last good numeric cache when CodexBar is temporarily
+unavailable. `--no-usage` disables both quota sync and legacy local usage sync.
+
 ## Touch navigation
 
 - From Home, drag down from the top 82 pixels to reveal Today, swipe left to
-  open Settings, or swipe up to open Codex Usage. The surface follows the finger
+  open Settings, or swipe up to open Codex Quota. The surface follows the finger
   and snaps open or closed on release.
 - While the panel opens, the Pet moves below it and shows only its upper body.
   When lifecycle priority allows, the v2 000° look frame makes it look upward.
-- Swipe up from Today, right from Settings, or down from Codex Usage to return
-  Home. Settings and Usage also provide a Back control.
-- Settings starts the non-blocking C6 backend and exposes Wi-Fi enable, scan,
+- Swipe up from Today, right from Settings, or down from Codex Quota to return
+  Home. Settings and Quota also provide a Back control.
+- When compiled in, Settings starts the non-blocking C6 backend and exposes Wi-Fi enable, scan,
   network selection, password entry for secured networks, forget, and a BLE
   Enable/Disable control. BLE starts disabled. Enable initializes the P4 NimBLE
   host and C6 controller before advertising as `Codex Pet`; Disable stops
@@ -259,9 +273,14 @@ warning; a successful refresh clears that warning state.
   of starting a second NimBLE stop. An immediate internal stop error is latched
   to protect NimBLE's static listener; restart the device before trying BLE
   again in that exceptional case.
-- Codex Usage shows latest-session tokens, today's tokens, today's cached-input
-  ratio, and the last update time received from the desktop daemon. It marks
-  data aging after five minutes and stale after 30 minutes.
+- The wireless backend is disabled in the default P4 build. Enable
+  `Codex Pet → Start the ESP32-C6 wireless backend` only after the matching C6
+  image has been flashed and verified. A disabled backend intentionally leaves
+  Wi-Fi and BLE controls unavailable.
+- Codex Quota shows CodexBar's five-hour and weekly remaining percentages,
+  reset times, optional credits, and update freshness. It marks data aging
+  after five minutes and stale after 30 minutes. Older firmware can still use
+  the legacy local-token `usage` command.
 - Tap the Pet for a random blink, wave, jump, look, turn, or excited reaction.
   A 2.5-second cooldown prevents repeated interruptions, and the Pet returns to
   the newest `idle`, `running`, `waiting`, or `review` state afterward.
@@ -289,16 +308,19 @@ After flashing, verify all of the following on the real board:
    confirm it disappears. Enable it again and confirm it reappears. Repeat the
    cycle while Wi-Fi is connected and verify Wi-Fi remains connected. This is
    BLE discovery only; Classic Bluetooth is not supported.
-10. An upward swipe opens Codex Usage and shows the values sent by the desktop
-    daemon. A downward swipe or Back returns Home. Leave the daemon stopped
-    long enough to observe aging at five minutes and stale at 30 minutes.
-11. `capabilities`, all four lifecycle commands, `clock`, `weather`, and `usage`
-    return the exact acknowledgements above.
-12. Time continues advancing between minute syncs; a failed weather or usage
+10. An upward swipe opens Codex Quota and shows the same remaining percentages,
+    reset times, and credits reported by CodexBar. A downward swipe or Back
+    returns Home. Leave the daemon stopped long enough to observe aging at five
+    minutes and stale at 30 minutes.
+11. The Today panel shows a clock icon next to its time and a condition icon;
+    Home shows the same condition icon beside the weather label.
+12. `capabilities`, all four lifecycle commands, `clock`, `weather`, `quota`,
+    and legacy `usage` return the exact acknowledgements above.
+13. Time continues advancing between minute syncs; a failed weather or CodexBar
     refresh does not block lifecycle or clock updates.
-13. The backlight and scaled animation remain stable while Wi-Fi scans, BLE
+14. The backlight and scaled animation remain stable while Wi-Fi scans, BLE
     advertises continuously, and BLE is repeatedly disabled and enabled.
-14. Confirm no camera indicator or stream activates; the application contains no
+15. Confirm no camera indicator or stream activates; the application contains no
    camera initialization, but this remains a physical acceptance check.
 
 If the panel stays dark, stop and check that the exact PCB model is
@@ -309,8 +331,8 @@ similar P4 display.
 
 Install the macOS runtime with `bash mac/install.sh`. The daemon and lifecycle
 hooks use the newline-delimited protocol above and negotiate v2 extensions. The
-daemon supplies usage aggregates over USB; Wi-Fi is not required for lifecycle
-or usage sync. Generic CH340 ports intentionally remain excluded
+daemon supplies CodexBar quota fields over USB; Wi-Fi is not required for
+lifecycle or quota sync. Generic CH340 ports intentionally remain excluded
 from automatic discovery because their metadata cannot prove which board is
 attached; configure the daemon with the verified explicit P4 port when automatic
 selection is ambiguous. The maintained host environment is macOS.
@@ -319,9 +341,10 @@ selection is ambiguous. The maintained host environment is macOS.
 
 The board/display route was previously clean-built and flashed to an ESP32-P4
 revision v1.3 unit, and its written image hashes were verified. The full v2
-animation asset has also been linked locally. The Settings and Codex Usage
+animation asset has also been linked locally. The Settings and Codex Quota
 surfaces, P4/C6 SDIO link, Wi-Fi connection, repeated BLE controller teardown and
-restart, BLE advertising, updated Serial exchange, and concurrent display/touch
-stability still require the physical checks above. If the stock ST7701 route
+restart, BLE advertising, CodexBar quota rendering, weather/clock icons, updated
+Serial exchange, and concurrent display/touch stability still require the
+physical checks above. If the stock ST7701 route
 becomes unreliable, migrate to the hardware-tested manual DPI bring-up rather
 than changing timings at random.

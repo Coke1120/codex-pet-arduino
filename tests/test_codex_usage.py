@@ -9,6 +9,7 @@ import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -267,6 +268,134 @@ class UsageWorkerTests(unittest.TestCase):
         self.assertIsNotNone(worker._refresh_thread)
         worker._refresh_thread.join(timeout=1)
         self.assertEqual(worker.snapshot(), snapshot)
+
+
+class CodexBarQuotaTests(unittest.TestCase):
+    def test_json_maps_used_to_remaining_and_keeps_missing_window_unknown(self):
+        payload = {
+            "provider": "codex",
+            "source": "oauth",
+            "usage": {
+                "primary": None,
+                "secondary": {
+                    "usedPercent": 48,
+                    "resetsAt": "2026-08-08T07:21:19Z",
+                },
+                "updatedAt": "2026-08-04T14:26:27Z",
+                "identity": {"accountEmail": "private@example.com"},
+            },
+            "credits": {"remaining": 0},
+            "error": None,
+        }
+
+        snapshot = usage.parse_codexbar_quota(payload)
+        command = usage.build_quota_command(snapshot)
+
+        self.assertEqual(snapshot.session_remaining_percent, -1)
+        self.assertEqual(snapshot.session_reset_epoch, 0)
+        self.assertEqual(snapshot.weekly_remaining_percent, 52)
+        self.assertEqual(
+            snapshot.weekly_reset_epoch,
+            int(datetime.fromisoformat("2026-08-08T07:21:19+00:00").timestamp()),
+        )
+        self.assertEqual(snapshot.credits_remaining_tenths, 0)
+        self.assertNotIn("private@example.com", command)
+        self.assertEqual(
+            command,
+            "quota -1 0 52 1786173679 0 1785853587",
+        )
+
+    def test_decimal_windows_and_credits_are_rounded_for_the_wire(self):
+        snapshot = usage.parse_codexbar_quota(
+            {
+                "provider": "codex",
+                "usage": {
+                    "primary": {
+                        "usedPercent": 27.6,
+                        "resetsAt": "2026-08-04T19:15:00Z",
+                    },
+                    "secondary": {
+                        "usedPercent": 59.4,
+                        "resetsAt": "2026-08-05T17:00:00Z",
+                    },
+                    "updatedAt": "2026-08-04T18:10:22Z",
+                },
+                "credits": {"remaining": 112.45},
+            }
+        )
+
+        self.assertEqual(snapshot.session_remaining_percent, 72)
+        self.assertEqual(snapshot.weekly_remaining_percent, 41)
+        self.assertEqual(snapshot.credits_remaining_tenths, 1125)
+
+    def test_invalid_or_empty_codexbar_payloads_are_rejected(self):
+        invalid = (
+            {},
+            {"provider": "codex", "error": {"kind": "provider"}},
+            {"provider": "codex", "usage": {"updatedAt": "2026-08-04T00:00:00Z"}},
+            {
+                "provider": "codex",
+                "usage": {
+                    "primary": {"usedPercent": 101, "resetsAt": None},
+                    "updatedAt": "2026-08-04T00:00:00Z",
+                },
+            },
+        )
+        for payload in invalid:
+            with self.subTest(payload=payload), self.assertRaises((OSError, ValueError)):
+                usage.parse_codexbar_quota(payload)
+
+    def test_collector_uses_official_identity_free_json_cli_contract(self):
+        payload = {
+            "provider": "codex",
+            "usage": {
+                "primary": {"usedPercent": 20, "resetsAt": None},
+                "secondary": None,
+                "updatedAt": "2026-08-04T00:00:00Z",
+            },
+            "credits": None,
+        }
+        runner = Mock(
+            return_value=Mock(returncode=0, stdout=json.dumps(payload), stderr="")
+        )
+
+        snapshot = usage.collect_codexbar_quota(
+            Path("/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI"),
+            runner=runner,
+        )
+
+        self.assertEqual(snapshot.session_remaining_percent, 80)
+        command = runner.call_args.args[0]
+        self.assertEqual(
+            command,
+            [
+                "/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI",
+                "--provider",
+                "codex",
+                "--source",
+                "oauth",
+                "--format",
+                "json",
+                "--json-only",
+            ],
+        )
+
+    def test_quota_worker_caches_only_numeric_snapshot_fields(self):
+        snapshot = usage.CodexBarQuotaSnapshot(-1, 0, 52, 1000, 0, 900)
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary) / "codexbar-quota.json"
+            worker = usage.CodexBarQuotaWorker(
+                cache,
+                collector=lambda: snapshot,
+                monotonic_clock=lambda: 0,
+            )
+            self.assertEqual(worker.refresh_if_due(blocking=True), snapshot)
+            cached = json.loads(cache.read_text(encoding="utf-8"))
+            reloaded = usage.CodexBarQuotaWorker(cache)
+
+        self.assertEqual(set(cached), set(snapshot.__dict__))
+        self.assertTrue(all(isinstance(value, int) for value in cached.values()))
+        self.assertEqual(reloaded.snapshot(), snapshot)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ USB Serial protocol. Its onboard ESP32-C6 provides Wi-Fi and Bluetooth Low
 Energy over ESP-Hosted SDIO.
 
 The pet remains the primary interface. It reflects the current Codex lifecycle
-state, reacts to touch, and exposes Today, Settings, and local Codex Usage as
+state, reacts to touch, and exposes Today, Settings, and Codex quota as
 gesture-driven information layers. The private Codex Pet v2 source atlas stays
 local and is converted into a gitignored firmware asset before building.
 
@@ -32,13 +32,13 @@ is an implementation detail, not a compatibility commitment.
 - Four Codex lifecycle states: `idle`, `running`, `waiting`, and `review`
 - Complete 73-frame Codex Pet v2 action and look-direction contract
 - Priority-aware wave, jump, failure, waiting, running, review, and touch reactions
-- Thin time/weather bar and pull-down Today panel
+- Thin time/weather bar and pull-down Today panel with clock and weather icons
 - Hong Kong weather, high/low temperature, rain probability, and stale-data handling
 - Swipe-left Settings page for Wi-Fi and BLE controls
-- Swipe-up Codex Usage page for privacy-limited local token aggregates
-- Wi-Fi station scan/connect/forget through the onboard ESP32-C6
-- BLE host/controller enable/disable and `Codex Pet` advertising (BLE only; no Classic Bluetooth)
-- USB Serial lifecycle, clock, weather, and usage synchronization
+- Swipe-up Codex quota page synchronized through CodexBar
+- Optional Wi-Fi station scan/connect/forget through the onboard ESP32-C6
+- Optional BLE host/controller enable/disable and `Codex Pet` advertising (BLE only; no Classic Bluetooth)
+- USB Serial lifecycle, clock, weather, quota, and legacy usage synchronization
 - Persistent macOS LaunchAgent with official Codex lifecycle hooks
 - Local-only generated pet artwork excluded from Git
 
@@ -60,7 +60,7 @@ installs, initializes, tests, or uses it.
 | Lithium battery path | Battery connector and charger/power circuit | Hardware-only: no battery percentage, charge-state, sleep, or power-management UI |
 | RS-485 and expansion I/O | RS-485, UART, I2C, and GPIO connectors | Unassigned: no Codex Pet protocol, driver setup, or UI controls |
 
-Wi-Fi and BLE support is deliberately narrow. Wi-Fi provides
+Wi-Fi and BLE support is deliberately narrow and build-time opt-in. Wi-Fi provides
 station enable, scan, connect, and forget controls, but Mac synchronization still
 uses USB Serial. BLE starts disabled; enabling it initializes the P4 NimBLE host
 and C6 controller and advertises `Codex Pet`, while disabling it tears both
@@ -78,26 +78,26 @@ reads either sensor.
 |---|---|
 | Drag down from the top edge | Open Today; the pet moves below the card and looks up |
 | Swipe left | Open Settings |
-| Swipe up | Open Codex Usage |
+| Swipe up | Open Codex Quota |
 | Tap the pet | Play a cooldown-limited random reaction, then return to the current lifecycle state |
 | Tap the status card | Cycle lifecycle states for hardware testing |
 
 Today closes with an upward swipe. Settings closes with a right swipe or Back.
-Usage closes with a downward swipe or Back.
+Quota closes with a downward swipe or Back.
 
 ## Architecture
 
 ```text
 Codex hooks ──▶ mac/codex_pet_hook.py ─┐
-                                        ├─▶ codex_pet_daemon.py ──USB Serial──▶ ESP32-P4
-Local session token_count events ───────┘                                      │
+CodexBar quota ─────────────────────────┼─▶ codex_pet_daemon.py ──USB Serial──▶ ESP32-P4
+Legacy local token aggregates ──────────┘                                      │
                                                                                ├─▶ LVGL UI + v2 pet actions
 Open-Meteo weather ─────────────────────────────────────────────────────────────┤
                                                                                └─SDIO──▶ ESP32-C6 Wi-Fi/BLE
 ```
 
 The Mac sends compact data only. The device advances its own clock between
-minute syncs, keeps the last weather/usage values when refreshes fail, and marks
+minute syncs, keeps the last weather/quota values when refreshes fail, and marks
 old data as stale instead of blanking the UI.
 
 ## Repository layout
@@ -107,7 +107,7 @@ esp32-p4/                         ESP-IDF firmware and locked managed components
 mac/codex_pet_bridge.py           Manual macOS USB Serial bridge
 mac/codex_pet_hook.py             Codex lifecycle hook event mapper
 mac/codex_pet_daemon.py           Persistent lifecycle/data synchronization daemon
-mac/codex_pet_usage.py            Local token-count aggregate reader
+mac/codex_pet_usage.py            CodexBar quota adapter and legacy aggregate reader
 mac/install.sh                    macOS runtime and LaunchAgent installer
 tools/convert_codex_pet_p4.py     Codex Pet v2 atlas converter
 tools/install_codex_hooks.py      Non-destructive Codex hook merger
@@ -123,6 +123,7 @@ vendor/jc4880p443c_i_w_bsp/       Licensed vendor BSP provenance snapshot
 - macOS
 - GUITION JC4880P443C-I-W and suitable USB cables
 - ESP-IDF 5.5.1
+- CodexBar with a working Codex login for account quota display
 - Python 3
 - `ffmpeg` when converting a selected Codex Pet v2 atlas
 
@@ -163,7 +164,7 @@ Exit the monitor with `Ctrl+]`. Expected boot output includes:
 ```text
 Codex Pet ESP32-P4 ready
 Board: JC4880P443C-I-W
-Protocol: v2 lifecycle clock weather today-v1 usage-v1 wireless settings-v1
+Protocol: v2 lifecycle clock weather today-v1 usage-v1 quota-v1 codexbar-v1 wireless settings-v1
 ```
 
 ## 3. Build and flash the ESP32-C6 wireless slave
@@ -179,7 +180,10 @@ idf.py -p /dev/cu.<verified-c6-port> flash monitor
 ```
 
 Verify the chip identity and port before flashing. Mixing host and slave images
-from different ESP-Hosted releases is unsupported.
+from different ESP-Hosted releases is unsupported. Only after the matching C6
+image is verified should `Codex Pet → Start the ESP32-C6 wireless backend` be
+enabled in P4 `menuconfig` and the P4 rebuilt and physically tested. The default
+P4 build keeps this option off so an unverified C6 cannot regress display bring-up.
 
 ## 4. Install the macOS host runtime
 
@@ -259,8 +263,11 @@ touch, P4/C6 radio, Serial, and camera-inactivity checks in
 
 - The lifecycle hook stores only a hashed session key, mapped state, event name,
   and timestamp. It does not store prompts or transcript content.
-- Codex Usage reads only local `token_count` events and sends aggregate integers.
-  It is not an account quota or billing report.
+- CodexBar performs Codex authentication and quota retrieval. The daemon sends
+  only remaining percentages, reset epochs, credit balance, and update epoch to
+  the P4; it never sends the CodexBar account identity.
+- The legacy reader accepts only local `token_count` events for compatibility
+  with older P4 firmware; those aggregates are not account quota data.
 - Wi-Fi passwords are cleared from the UI after submission and are not included
   in UI status snapshots or logs.
 - The camera and microphone are not initialized; the application contains no
@@ -286,9 +293,10 @@ project's macOS-only host support policy.
 
 The board/display path has been built, flashed, and hash-verified on an
 ESP32-P4 revision v1.3 unit. The full v2 asset has also linked successfully.
-Settings, Codex Usage, P4/C6 SDIO, Wi-Fi, repeated BLE enable/disable and
-advertising, updated Serial exchange, and continuous display/touch stability
-still require the complete physical checklist in
+The new weather/clock icons and CodexBar quota UI have clean-built but still
+require post-flash physical acceptance. P4/C6 SDIO, Wi-Fi, repeated BLE
+enable/disable and advertising, updated Serial exchange, and continuous
+display/touch stability still require the complete physical checklist in
 [`docs/ESP32_P4.md`](docs/ESP32_P4.md).
 
 ## Contributing and security

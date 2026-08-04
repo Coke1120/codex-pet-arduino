@@ -443,14 +443,14 @@ class P4LinkTests(unittest.TestCase):
 
     def test_capability_probe_enables_only_known_v2_features(self) -> None:
         board = FakeBoard(
-            [b"pong\n", b"OK CAPABILITIES clock future_feature usage weather\n"]
+            [b"pong\n", b"OK CAPABILITIES clock future_feature quota usage weather\n"]
         )
         with patch.object(daemon.serial, "Serial", return_value=board), patch.object(
             daemon.time, "sleep"
         ):
             link = daemon.P4Link("/dev/cu.test")
 
-        self.assertEqual(link.capabilities, {"clock", "usage", "weather"})
+        self.assertEqual(link.capabilities, {"clock", "quota", "usage", "weather"})
         self.assertEqual(board.writes, [b"ping\n", b"capabilities\n"])
 
     def test_capability_timeout_is_retryable_transport_failure(self) -> None:
@@ -477,11 +477,15 @@ class P4LinkTests(unittest.TestCase):
         )
         link = daemon.P4Link.__new__(daemon.P4Link)
         usage_snapshot = daemon.UsageSnapshot(100, 200, 50, 150, 1_722_730_800)
-        link.board = FakeBoard([b"OK CLOCK\n", b"OK WEATHER\n", b"OK USAGE\n"])
+        quota_snapshot = daemon.CodexBarQuotaSnapshot(-1, 0, 52, 1_786_173_679, 0, 1_785_853_587)
+        link.board = FakeBoard(
+            [b"OK CLOCK\n", b"OK WEATHER\n", b"OK USAGE\n", b"OK QUOTA\n"]
+        )
 
         link.send_clock(1_722_730_800, 28_800)
         link.send_weather(snapshot)
         link.send_usage(usage_snapshot)
+        link.send_quota(quota_snapshot)
 
         self.assertEqual(
             link.board.writes,
@@ -489,6 +493,7 @@ class P4LinkTests(unittest.TestCase):
                 b"clock 1722730800 28800\n",
                 b"weather 29.5 27 32 82 rain 1722730800\n",
                 b"usage 100 200 50 150 1722730800\n",
+                b"quota -1 0 52 1786173679 0 1785853587\n",
             ],
         )
 
@@ -857,6 +862,45 @@ class WeatherSyncTests(unittest.TestCase):
 
         worker_class.assert_not_called()
         link.send_usage.assert_not_called()
+
+    def test_codexbar_quota_is_preferred_over_local_usage(self) -> None:
+        snapshot = daemon.CodexBarQuotaSnapshot(-1, 0, 52, 1000, 0, 900)
+        link = unittest.mock.Mock()
+        link.capabilities = {"quota", "usage"}
+        worker = unittest.mock.Mock()
+        worker.refresh_if_due.return_value = snapshot
+        worker.last_error.return_value = None
+
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            daemon.sys,
+            "argv",
+            [
+                "codex_pet_daemon.py",
+                "--state-dir",
+                temporary,
+                "--port",
+                "/dev/cu.test",
+                "--once",
+            ],
+        ), patch.object(daemon, "choose_port", return_value="/dev/cu.test"), patch.object(
+            daemon, "P4Link", return_value=link
+        ), patch.object(
+            daemon, "CodexBarQuotaWorker", return_value=worker
+        ) as worker_class, patch.object(
+            daemon, "UsageWorker"
+        ) as local_worker_class, patch.object(
+            daemon.signal, "signal"
+        ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(daemon.main(), 0)
+
+        worker_class.assert_called_once_with(
+            Path(temporary).parent / "codexbar-quota-cache.json"
+        )
+        local_worker_class.assert_not_called()
+        worker.refresh_if_due.assert_called_once_with(blocking=True)
+        link.send_quota.assert_called_once_with(snapshot)
+        link.send_usage.assert_not_called()
+        link.close.assert_called_once_with()
 
     def test_once_with_v2_link_sends_lifecycle_clock_and_weather(self) -> None:
         snapshot = daemon.WeatherSnapshot(29.5, 27.0, 32.0, 82, "rain", 200)

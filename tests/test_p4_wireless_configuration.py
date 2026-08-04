@@ -42,6 +42,36 @@ class P4WirelessConfigurationTests(unittest.TestCase):
         lock = (P4 / "dependencies.lock").read_text(encoding="utf-8")
         self.assertRegex(lock, r"(?ms)^  espressif/esp_hosted:.*?^    version: 2\.12\.12$")
 
+    def test_hosted_initialization_waits_for_app_startup(self):
+        cmake = (P4 / "main" / "CMakeLists.txt").read_text(encoding="utf-8")
+        source = (P4 / "main" / "pet_wireless.c").read_text(encoding="utf-8")
+        app = (P4 / "main" / "codex_pet_main.c").read_text(encoding="utf-8")
+        kconfig = (P4 / "main" / "Kconfig.projbuild").read_text(encoding="utf-8")
+        task = re.search(
+            r"static void wireless_task\([^)]*\)\n\{(?P<body>.*?)\n\}", source, re.S
+        )
+        self.assertIsNotNone(task)
+        self.assertIn(
+            "idf_component_set_property(espressif__esp_hosted WHOLE_ARCHIVE FALSE)",
+            cmake,
+        )
+        self.assertRegex(
+            kconfig,
+            r"(?ms)^config CODEX_PET_C6_WIRELESS$.*?^\s+default n$",
+        )
+        self.assertRegex(
+            app,
+            r"(?ms)^#ifdef CONFIG_CODEX_PET_C6_WIRELESS$.*?"
+            r"wireless_result = pet_wireless_start\(\);.*?^#endif$",
+        )
+        body = task.group("body")
+        self.assertLess(
+            body.index("esp_hosted_init()"),
+            body.index("esp_hosted_connect_to_slave()"),
+        )
+        for stage in ("esp_hosted_init", "connect_to_slave", "initialize_wifi"):
+            self.assertIn('printf("Wireless stage: {}'.format(stage), body)
+
     def test_factory_uses_flash_with_exact_512k_tail_margin(self):
         partition = (P4 / "partitions.csv").read_text(encoding="utf-8")
         match = re.search(

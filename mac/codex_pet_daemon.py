@@ -20,7 +20,14 @@ MAC_DIR = Path(__file__).resolve().parent
 if str(MAC_DIR) not in sys.path:
     sys.path.insert(0, str(MAC_DIR))
 
-from codex_pet_usage import UsageSnapshot, UsageWorker, build_usage_command
+from codex_pet_usage import (
+    CodexBarQuotaSnapshot,
+    CodexBarQuotaWorker,
+    UsageSnapshot,
+    UsageWorker,
+    build_quota_command,
+    build_usage_command,
+)
 
 try:
     import serial
@@ -34,7 +41,7 @@ except ImportError as exc:
 VALID_STATES = ("idle", "running", "waiting", "review")
 STATE_PRIORITY = {"idle": 0, "running": 1, "review": 2, "waiting": 3}
 PORT_WARNING_INTERVAL = 30.0
-KNOWN_CAPABILITIES = frozenset(("clock", "usage", "weather"))
+KNOWN_CAPABILITIES = frozenset(("clock", "quota", "usage", "weather"))
 WEATHER_CONDITIONS = frozenset(
     (
         "clear",
@@ -508,6 +515,9 @@ class P4Link:
     def send_usage(self, snapshot: UsageSnapshot) -> None:
         self._exchange(build_usage_command(snapshot), "OK USAGE")
 
+    def send_quota(self, snapshot: CodexBarQuotaSnapshot) -> None:
+        self._exchange(build_quota_command(snapshot), "OK QUOTA")
+
 
 def _close_quietly(link: P4Link) -> None:
     try:
@@ -539,7 +549,11 @@ def main() -> int:
     parser.add_argument(
         "--sessions-root", type=Path, default=Path.home() / ".codex" / "sessions"
     )
-    parser.add_argument("--no-usage", action="store_true")
+    parser.add_argument(
+        "--no-usage",
+        action="store_true",
+        help="disable CodexBar quota and legacy local usage synchronization",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
@@ -566,6 +580,9 @@ def main() -> int:
     usage_worker: Optional[UsageWorker] = None
     sent_usage: Optional[UsageSnapshot] = None
     reported_usage_error: Optional[str] = None
+    quota_worker: Optional[CodexBarQuotaWorker] = None
+    sent_quota: Optional[CodexBarQuotaSnapshot] = None
+    reported_quota_error: Optional[str] = None
 
     while not stopped:
         desired = aggregate_state(
@@ -591,6 +608,7 @@ def main() -> int:
                     next_clock_at = 0.0
                     sent_weather_epoch = None
                     sent_usage = None
+                    sent_quota = None
                     if (
                         "weather" in link.capabilities
                         and not args.no_weather
@@ -606,6 +624,7 @@ def main() -> int:
                         reported_weather_error = None
                     if (
                         "usage" in link.capabilities
+                        and "quota" not in link.capabilities
                         and not args.no_usage
                         and usage_worker is None
                     ):
@@ -614,6 +633,15 @@ def main() -> int:
                             args.state_dir.parent / "usage-cache.json",
                         )
                         reported_usage_error = None
+                    if (
+                        "quota" in link.capabilities
+                        and not args.no_usage
+                        and quota_worker is None
+                    ):
+                        quota_worker = CodexBarQuotaWorker(
+                            args.state_dir.parent / "codexbar-quota-cache.json"
+                        )
+                        reported_quota_error = None
                     negotiated = ", ".join(sorted(link.capabilities))
                     print(
                         "Connected to {} [{}]".format(selected, negotiated),
@@ -693,6 +721,7 @@ def main() -> int:
         if (
             link is not None
             and "usage" in link.capabilities
+            and "quota" not in link.capabilities
             and usage_worker is not None
         ):
             snapshot = usage_worker.refresh_if_due(blocking=args.once)
@@ -716,6 +745,33 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 reported_usage_error = usage_error
+
+        if (
+            link is not None
+            and "quota" in link.capabilities
+            and quota_worker is not None
+        ):
+            snapshot = quota_worker.refresh_if_due(blocking=args.once)
+            if snapshot is not None and snapshot != sent_quota:
+                try:
+                    link.send_quota(snapshot)
+                    sent_quota = snapshot
+                except (OSError, serial.SerialException) as exc:
+                    print("Codex Pet serial warning: {}".format(exc), file=sys.stderr)
+                    _close_quietly(link)
+                    link = None
+                    next_connect_at = time.monotonic() + 2.0
+
+        if quota_worker is not None:
+            quota_error = quota_worker.last_error()
+            if quota_error is None:
+                reported_quota_error = None
+            elif quota_error != reported_quota_error:
+                print(
+                    "Codex Pet CodexBar warning: {}".format(quota_error),
+                    file=sys.stderr,
+                )
+                reported_quota_error = quota_error
 
         if args.once:
             break

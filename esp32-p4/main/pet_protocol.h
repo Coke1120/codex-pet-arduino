@@ -36,6 +36,7 @@ typedef enum {
     PET_COMMAND_CLOCK,
     PET_COMMAND_WEATHER,
     PET_COMMAND_USAGE,
+    PET_COMMAND_QUOTA,
 } pet_command_type_t;
 
 typedef enum {
@@ -69,12 +70,22 @@ typedef struct {
 } pet_usage_command_t;
 
 typedef struct {
+    int session_remaining_percent;
+    int64_t session_reset_epoch;
+    int weekly_remaining_percent;
+    int64_t weekly_reset_epoch;
+    int64_t credits_remaining_tenths;
+    int64_t updated_epoch;
+} pet_quota_command_t;
+
+typedef struct {
     pet_command_type_t type;
     union {
         pet_lifecycle_t state;
         pet_clock_command_t clock;
         pet_weather_command_t weather;
         pet_usage_command_t usage;
+        pet_quota_command_t quota;
     } data;
 } pet_command_t;
 

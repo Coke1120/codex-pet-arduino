@@ -739,9 +739,18 @@ static void handle_command(const command_t *command)
 static void wireless_task(void *argument)
 {
     (void)argument;
-    esp_err_t result = esp_hosted_connect_to_slave();
+    printf("Wireless stage: esp_hosted_init\n");
+    esp_err_t result = esp_hosted_init();
+    printf("Wireless stage: esp_hosted_init result=%ld\n", (long)result);
     if (result == ESP_OK) {
+        printf("Wireless stage: connect_to_slave\n");
+        result = esp_hosted_connect_to_slave();
+        printf("Wireless stage: connect_to_slave result=%ld\n", (long)result);
+    }
+    if (result == ESP_OK) {
+        printf("Wireless stage: initialize_wifi\n");
         result = initialize_wifi();
+        printf("Wireless stage: initialize_wifi result=%ld\n", (long)result);
     }
     if (result != ESP_OK) {
         xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);

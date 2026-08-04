@@ -34,6 +34,9 @@
 #define ACTION_CONTEXT (-1)
 #define SETTINGS_NETWORK_BUTTON_COUNT 6
 #define PAGE_ANIMATION_MS 220
+#define TOP_WEATHER_ICON_SIZE 28
+#define TODAY_WEATHER_ICON_SIZE 52
+#define TODAY_CLOCK_ICON_SIZE 30
 
 static const char *TAG = "codex_pet";
 
@@ -223,20 +226,27 @@ typedef struct {
 } usage_data_t;
 
 typedef struct {
+    bool valid;
+    pet_quota_command_t values;
+} quota_data_t;
+
+typedef struct {
     lv_obj_t *screen;
     lv_obj_t *image;
     lv_obj_t *top_bar;
     lv_obj_t *top_time;
-    lv_obj_t *top_weather_dot;
+    lv_obj_t *top_weather_icon;
     lv_obj_t *top_weather;
     lv_obj_t *status_card;
     lv_obj_t *status_dot;
     lv_obj_t *status_label;
     lv_obj_t *today_panel;
+    lv_obj_t *today_clock_icon;
     lv_obj_t *today_time;
     lv_obj_t *today_weekday;
     lv_obj_t *today_date;
     lv_obj_t *today_temperature;
+    lv_obj_t *today_weather_icon;
     lv_obj_t *today_condition;
     lv_obj_t *today_high_low;
     lv_obj_t *today_updated;
@@ -256,9 +266,15 @@ typedef struct {
     lv_obj_t *settings_network_buttons[SETTINGS_NETWORK_BUTTON_COUNT];
     lv_obj_t *settings_network_labels[SETTINGS_NETWORK_BUTTON_COUNT];
     lv_obj_t *usage_page;
+    lv_obj_t *usage_latest_title;
     lv_obj_t *usage_latest;
+    lv_obj_t *usage_latest_detail;
+    lv_obj_t *usage_today_title;
     lv_obj_t *usage_today;
+    lv_obj_t *usage_today_detail;
+    lv_obj_t *usage_cache_title;
     lv_obj_t *usage_cache;
+    lv_obj_t *usage_cache_detail;
     lv_obj_t *usage_updated;
     lv_obj_t *password_dialog;
     lv_obj_t *password_title;
@@ -291,6 +307,7 @@ typedef struct {
     clock_data_t clock;
     weather_data_t weather;
     usage_data_t usage;
+    quota_data_t quota;
     pet_wireless_snapshot_t wireless;
 } pet_ui_t;
 
@@ -335,6 +352,126 @@ static lv_color_t weather_colour(pet_weather_condition_t condition)
     case PET_WEATHER_THUNDER: return lv_color_hex(0xC88CFF);
     default: return lv_color_hex(0x55616D);
     }
+}
+
+static int32_t icon_px(int32_t size, int32_t units)
+{
+    return (size * units + 12) / 24;
+}
+
+static lv_obj_t *create_icon_root(lv_obj_t *parent, int32_t size, int32_t x, int32_t y)
+{
+    lv_obj_t *root = lv_obj_create(parent);
+    lv_obj_remove_style_all(root);
+    lv_obj_set_size(root, size, size);
+    lv_obj_set_pos(root, x, y);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(root, LV_OBJ_FLAG_CLICKABLE);
+    return root;
+}
+
+static lv_obj_t *create_icon_part(lv_obj_t *root, int32_t size,
+                                  int32_t x, int32_t y, int32_t width, int32_t height,
+                                  lv_color_t colour, int32_t radius)
+{
+    lv_obj_t *part = lv_obj_create(root);
+    lv_obj_remove_style_all(part);
+    int32_t scaled_width = icon_px(size, width);
+    int32_t scaled_height = icon_px(size, height);
+    lv_obj_set_size(part, scaled_width > 0 ? scaled_width : 1,
+                    scaled_height > 0 ? scaled_height : 1);
+    lv_obj_set_pos(part, icon_px(size, x), icon_px(size, y));
+    lv_obj_set_style_bg_color(part, colour, 0);
+    lv_obj_set_style_bg_opa(part, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(part, icon_px(size, radius), 0);
+    lv_obj_remove_flag(part, LV_OBJ_FLAG_CLICKABLE);
+    return part;
+}
+
+static void draw_sun_icon(lv_obj_t *root, int32_t size, bool compact)
+{
+    lv_color_t sun = lv_color_hex(0xFFD75A);
+    if (compact) {
+        create_icon_part(root, size, 2, 2, 9, 9, sun, 5);
+        return;
+    }
+    create_icon_part(root, size, 8, 8, 8, 8, sun, 4);
+    create_icon_part(root, size, 11, 2, 2, 4, sun, 1);
+    create_icon_part(root, size, 11, 18, 2, 4, sun, 1);
+    create_icon_part(root, size, 2, 11, 4, 2, sun, 1);
+    create_icon_part(root, size, 18, 11, 4, 2, sun, 1);
+}
+
+static void draw_cloud_icon(lv_obj_t *root, int32_t size, lv_color_t colour)
+{
+    create_icon_part(root, size, 3, 8, 9, 9, colour, 5);
+    create_icon_part(root, size, 8, 4, 11, 12, colour, 6);
+    create_icon_part(root, size, 15, 9, 7, 7, colour, 4);
+    create_icon_part(root, size, 3, 11, 19, 7, colour, 4);
+}
+
+static void render_weather_icon(lv_obj_t *root, int32_t size,
+                                pet_weather_condition_t condition)
+{
+    lv_obj_clean(root);
+    lv_color_t cloud = lv_color_hex(0xB7C8DA);
+    switch (condition) {
+    case PET_WEATHER_CLEAR:
+        draw_sun_icon(root, size, false);
+        break;
+    case PET_WEATHER_PARTLY_CLOUDY:
+        draw_sun_icon(root, size, true);
+        draw_cloud_icon(root, size, cloud);
+        break;
+    case PET_WEATHER_CLOUDY:
+        draw_cloud_icon(root, size, lv_color_hex(0x82909E));
+        break;
+    case PET_WEATHER_RAIN:
+        draw_cloud_icon(root, size, cloud);
+        create_icon_part(root, size, 6, 19, 2, 4, lv_color_hex(0x54A7FF), 1);
+        create_icon_part(root, size, 11, 18, 2, 4, lv_color_hex(0x54A7FF), 1);
+        create_icon_part(root, size, 16, 19, 2, 4, lv_color_hex(0x54A7FF), 1);
+        break;
+    case PET_WEATHER_SNOW:
+        draw_cloud_icon(root, size, cloud);
+        create_icon_part(root, size, 6, 19, 3, 3, lv_color_hex(0xD7F3FF), 2);
+        create_icon_part(root, size, 11, 21, 3, 3, lv_color_hex(0xD7F3FF), 2);
+        create_icon_part(root, size, 16, 19, 3, 3, lv_color_hex(0xD7F3FF), 2);
+        break;
+    case PET_WEATHER_THUNDER:
+        draw_cloud_icon(root, size, lv_color_hex(0xA594C8));
+        create_icon_part(root, size, 11, 16, 4, 4, lv_color_hex(0xFFD75A), 1);
+        create_icon_part(root, size, 9, 19, 5, 2, lv_color_hex(0xFFD75A), 1);
+        create_icon_part(root, size, 9, 21, 2, 3, lv_color_hex(0xFFD75A), 1);
+        break;
+    case PET_WEATHER_FOG:
+        create_icon_part(root, size, 3, 7, 18, 3, lv_color_hex(0xA7B4C0), 2);
+        create_icon_part(root, size, 6, 12, 15, 3, lv_color_hex(0x82909E), 2);
+        create_icon_part(root, size, 3, 17, 18, 3, lv_color_hex(0xA7B4C0), 2);
+        break;
+    default:
+        create_icon_part(root, size, 8, 8, 8, 8,
+                         weather_colour(PET_WEATHER_UNKNOWN), 4);
+        break;
+    }
+}
+
+static lv_obj_t *create_clock_icon(lv_obj_t *parent, int32_t size, int32_t x, int32_t y)
+{
+    lv_obj_t *root = create_icon_root(parent, size, x, y);
+    lv_obj_t *ring = lv_obj_create(root);
+    lv_obj_remove_style_all(ring);
+    lv_obj_set_size(ring, icon_px(size, 20), icon_px(size, 20));
+    lv_obj_set_pos(ring, icon_px(size, 2), icon_px(size, 2));
+    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(ring, icon_px(size, 2), 0);
+    lv_obj_set_style_border_color(ring, lv_color_hex(0xE7EDF3), 0);
+    lv_obj_set_style_border_opa(ring, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(ring, LV_OBJ_FLAG_CLICKABLE);
+    create_icon_part(root, size, 11, 6, 2, 7, lv_color_hex(0xE7EDF3), 1);
+    create_icon_part(root, size, 11, 11, 6, 2, lv_color_hex(0xE7EDF3), 1);
+    create_icon_part(root, size, 10, 10, 4, 4, lv_color_hex(0xFFD75A), 2);
+    return root;
 }
 
 static pet_action_id_t lifecycle_action(pet_lifecycle_t state)
@@ -527,13 +664,108 @@ static void format_token_count(char *buffer, size_t capacity, int64_t tokens)
     }
 }
 
+static void format_quota_reset_locked(char *buffer, size_t capacity,
+                                      int remaining_percent, int64_t reset_epoch)
+{
+    if (remaining_percent < 0) {
+        snprintf(buffer, capacity, "Unavailable");
+        return;
+    }
+    if (!ui.clock.valid || reset_epoch <= 0) {
+        snprintf(buffer, capacity, "Reset time unavailable");
+        return;
+    }
+    time_t local_epoch = (time_t)pet_epoch_add_seconds(
+        reset_epoch, ui.clock.utc_offset_seconds);
+    struct tm local_time;
+    char reset[24];
+    if (gmtime_r(&local_epoch, &local_time) == NULL ||
+        strftime(reset, sizeof(reset), "%a %H:%M", &local_time) == 0) {
+        snprintf(buffer, capacity, "Reset time unavailable");
+        return;
+    }
+    snprintf(buffer, capacity, "Resets %s", reset);
+}
+
+static void update_quota_labels_locked(void)
+{
+    const pet_quota_command_t *quota = &ui.quota.values;
+    char session[16];
+    char weekly[16];
+    char credits[24];
+    char session_reset[48];
+    char weekly_reset[48];
+    char freshness_text[80];
+
+    lv_label_set_text(ui.usage_latest_title, "5-HOUR LEFT");
+    lv_label_set_text(ui.usage_today_title, "WEEKLY LEFT");
+    lv_label_set_text(ui.usage_cache_title, "CREDITS");
+    if (quota->session_remaining_percent < 0) snprintf(session, sizeof(session), "--");
+    else snprintf(session, sizeof(session), "%d%%", quota->session_remaining_percent);
+    if (quota->weekly_remaining_percent < 0) snprintf(weekly, sizeof(weekly), "--");
+    else snprintf(weekly, sizeof(weekly), "%d%%", quota->weekly_remaining_percent);
+    if (quota->credits_remaining_tenths < 0) {
+        snprintf(credits, sizeof(credits), "--");
+    } else if (quota->credits_remaining_tenths % 10 == 0) {
+        snprintf(credits, sizeof(credits), "%lld",
+                 (long long)(quota->credits_remaining_tenths / 10));
+    } else {
+        snprintf(credits, sizeof(credits), "%lld.%lld",
+                 (long long)(quota->credits_remaining_tenths / 10),
+                 (long long)(quota->credits_remaining_tenths % 10));
+    }
+    lv_label_set_text(ui.usage_latest, session);
+    lv_label_set_text(ui.usage_today, weekly);
+    lv_label_set_text(ui.usage_cache, credits);
+    format_quota_reset_locked(session_reset, sizeof(session_reset),
+                              quota->session_remaining_percent,
+                              quota->session_reset_epoch);
+    format_quota_reset_locked(weekly_reset, sizeof(weekly_reset),
+                              quota->weekly_remaining_percent,
+                              quota->weekly_reset_epoch);
+    lv_label_set_text(ui.usage_latest_detail, session_reset);
+    lv_label_set_text(ui.usage_today_detail, weekly_reset);
+    lv_label_set_text(ui.usage_cache_detail, "CodexBar balance");
+
+    int64_t now = current_epoch_locked();
+    int64_t age = now >= quota->updated_epoch ? now - quota->updated_epoch : -1;
+    pet_usage_freshness_t freshness = pet_usage_freshness(now, quota->updated_epoch);
+    if (freshness == PET_USAGE_STALE) {
+        snprintf(freshness_text, sizeof(freshness_text),
+                 "CodexBar sync stale - updated %lldm ago", (long long)(age / 60));
+        lv_obj_set_style_text_color(ui.usage_updated, lv_color_hex(0xF4C95D), 0);
+    } else if (freshness == PET_USAGE_AGING) {
+        snprintf(freshness_text, sizeof(freshness_text),
+                 "CodexBar sync delayed - updated %lldm ago", (long long)(age / 60));
+        lv_obj_set_style_text_color(ui.usage_updated, lv_color_hex(0xF4C95D), 0);
+    } else if (freshness == PET_USAGE_FRESH) {
+        snprintf(freshness_text, sizeof(freshness_text),
+                 "Updated %lldm ago through CodexBar", (long long)(age / 60));
+        lv_obj_set_style_text_color(ui.usage_updated, lv_color_hex(0x82909E), 0);
+    } else {
+        snprintf(freshness_text, sizeof(freshness_text), "Synced through CodexBar");
+        lv_obj_set_style_text_color(ui.usage_updated, lv_color_hex(0x82909E), 0);
+    }
+    lv_label_set_text(ui.usage_updated, freshness_text);
+}
+
 static void update_usage_labels_locked(void)
 {
+    if (ui.quota.valid) {
+        update_quota_labels_locked();
+        return;
+    }
     if (!ui.usage.valid) {
+        lv_label_set_text(ui.usage_latest_title, "5-HOUR LEFT");
+        lv_label_set_text(ui.usage_today_title, "WEEKLY LEFT");
+        lv_label_set_text(ui.usage_cache_title, "CREDITS");
         lv_label_set_text(ui.usage_latest, "--");
         lv_label_set_text(ui.usage_today, "--");
         lv_label_set_text(ui.usage_cache, "--");
-        lv_label_set_text(ui.usage_updated, "Waiting for local usage from Mac");
+        lv_label_set_text(ui.usage_latest_detail, "Waiting for CodexBar");
+        lv_label_set_text(ui.usage_today_detail, "Waiting for CodexBar");
+        lv_label_set_text(ui.usage_cache_detail, "CodexBar balance");
+        lv_label_set_text(ui.usage_updated, "Waiting for CodexBar quota from Mac");
         return;
     }
 
@@ -542,6 +774,12 @@ static void update_usage_labels_locked(void)
     char today[24];
     char cache[32];
     char freshness_text[80];
+    lv_label_set_text(ui.usage_latest_title, "LATEST SESSION");
+    lv_label_set_text(ui.usage_today_title, "TODAY");
+    lv_label_set_text(ui.usage_cache_title, "INPUT CACHE HIT");
+    lv_label_set_text(ui.usage_latest_detail, "tokens");
+    lv_label_set_text(ui.usage_today_detail, "tokens");
+    lv_label_set_text(ui.usage_cache_detail, "of today's input");
     format_token_count(latest, sizeof(latest), usage->latest_session_tokens);
     format_token_count(today, sizeof(today), usage->today_tokens);
     lv_label_set_text(ui.usage_latest, latest);
@@ -729,7 +967,6 @@ static void update_info_labels_locked(void)
         lv_label_set_text(ui.today_condition, "Weather unavailable");
         lv_label_set_text(ui.today_high_low, "H: --   L: --   Rain: --");
         lv_label_set_text(ui.today_updated, "Waiting for weather sync");
-        lv_obj_set_style_bg_color(ui.top_weather_dot, weather_colour(PET_WEATHER_UNKNOWN), 0);
         return;
     }
 
@@ -750,8 +987,6 @@ static void update_info_labels_locked(void)
     snprintf(text, sizeof(text), "H: %s\xC2\xB0   L: %s\xC2\xB0   Rain: %d%%", high, low,
              weather->rain_probability);
     lv_label_set_text(ui.today_high_low, text);
-    lv_obj_set_style_bg_color(ui.top_weather_dot, weather_colour(weather->condition), 0);
-
     int64_t age = now >= 0 ? now - weather->updated_epoch : -1;
     pet_weather_freshness_t freshness = pet_weather_freshness(now, weather->updated_epoch);
     if (freshness == PET_WEATHER_TIME_UNKNOWN) {
@@ -800,6 +1035,8 @@ static void apply_weather_locked(const pet_weather_command_t *weather)
     ui.weather.valid = true;
     ui.weather.values = *weather;
     ui.weather.stale_reaction_sent = false;
+    render_weather_icon(ui.top_weather_icon, TOP_WEATHER_ICON_SIZE, weather->condition);
+    render_weather_icon(ui.today_weather_icon, TODAY_WEATHER_ICON_SIZE, weather->condition);
     update_info_labels_locked();
 
     pet_action_id_t reaction = ACTION_WEATHER_REACTION;
@@ -821,6 +1058,13 @@ static void apply_usage_locked(const pet_usage_command_t *usage)
     ui.usage.valid = true;
     ui.usage.values = *usage;
     update_usage_labels_locked();
+}
+
+static void apply_quota_locked(const pet_quota_command_t *quota)
+{
+    ui.quota.valid = true;
+    ui.quota.values = *quota;
+    update_quota_labels_locked();
 }
 
 static void set_pet_render_top_locked(int32_t top)
@@ -1311,39 +1555,45 @@ static void create_usage_page(void)
 
     create_button(ui.usage_page, LV_SYMBOL_DOWN, 18, 18, 54, close_page_event,
                   (void *)(uintptr_t)PET_SURFACE_USAGE, NULL);
-    create_label(ui.usage_page, "LOCAL CODEX USAGE", &lv_font_montserrat_20,
+    create_label(ui.usage_page, "CODEX QUOTA", &lv_font_montserrat_20,
                  lv_color_hex(0xFFFFFF), 92, 33);
-    create_label(ui.usage_page, "From this Mac - not plan quota", &lv_font_montserrat_14,
+    create_label(ui.usage_page, "Synced through CodexBar", &lv_font_montserrat_14,
                  lv_color_hex(0x82909E), 24, 104);
 
-    create_label(ui.usage_page, "LATEST SESSION", &lv_font_montserrat_14,
-                 lv_color_hex(0x82909E), 24, 176);
+    ui.usage_latest_title = create_label(ui.usage_page, "5-HOUR LEFT",
+                                         &lv_font_montserrat_14,
+                                         lv_color_hex(0x82909E), 24, 176);
     ui.usage_latest = create_label(ui.usage_page, "--", &lv_font_montserrat_28,
                                    lv_color_hex(0xFFFFFF), 24, 210);
-    create_label(ui.usage_page, "tokens", &lv_font_montserrat_14,
-                 lv_color_hex(0xB9C6D2), 24, 252);
+    ui.usage_latest_detail = create_label(ui.usage_page, "Waiting for CodexBar",
+                                          &lv_font_montserrat_14,
+                                          lv_color_hex(0xB9C6D2), 24, 252);
 
-    create_label(ui.usage_page, "TODAY", &lv_font_montserrat_14,
-                 lv_color_hex(0x82909E), 24, 328);
+    ui.usage_today_title = create_label(ui.usage_page, "WEEKLY LEFT",
+                                        &lv_font_montserrat_14,
+                                        lv_color_hex(0x82909E), 24, 328);
     ui.usage_today = create_label(ui.usage_page, "--", &lv_font_montserrat_28,
                                   lv_color_hex(0xFFFFFF), 24, 362);
-    create_label(ui.usage_page, "tokens", &lv_font_montserrat_14,
-                 lv_color_hex(0xB9C6D2), 24, 404);
+    ui.usage_today_detail = create_label(ui.usage_page, "Waiting for CodexBar",
+                                         &lv_font_montserrat_14,
+                                         lv_color_hex(0xB9C6D2), 24, 404);
 
-    create_label(ui.usage_page, "INPUT CACHE HIT", &lv_font_montserrat_14,
-                 lv_color_hex(0x82909E), 264, 328);
+    ui.usage_cache_title = create_label(ui.usage_page, "CREDITS",
+                                        &lv_font_montserrat_14,
+                                        lv_color_hex(0x82909E), 264, 328);
     ui.usage_cache = create_label(ui.usage_page, "--", &lv_font_montserrat_28,
                                   lv_color_hex(0xFFFFFF), 264, 362);
-    create_label(ui.usage_page, "of today's input", &lv_font_montserrat_14,
-                 lv_color_hex(0xB9C6D2), 264, 404);
+    ui.usage_cache_detail = create_label(ui.usage_page, "CodexBar balance",
+                                         &lv_font_montserrat_14,
+                                         lv_color_hex(0xB9C6D2), 264, 404);
 
     lv_obj_t *note = create_label(ui.usage_page,
-        "Counts come from token counters in local Codex session logs.\n"
-        "Prompts and tool output never leave the Mac.",
+        "CodexBar owns provider authentication and quota fetching.\n"
+        "Only percentages, resets, and credits reach this display.",
         &lv_font_montserrat_14, lv_color_hex(0x9EACB9), 24, 510);
     lv_obj_set_width(note, 432);
     lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
-    ui.usage_updated = create_label(ui.usage_page, "Waiting for local usage from Mac",
+    ui.usage_updated = create_label(ui.usage_page, "Waiting for CodexBar quota from Mac",
                                     &lv_font_montserrat_14,
                                     lv_color_hex(0x82909E), 24, 690);
     create_label(ui.usage_page, "Swipe down to return to your Pet",
@@ -1395,15 +1645,10 @@ static void create_top_bar(void)
 
     ui.top_time = create_label(ui.top_bar, "--:--", &lv_font_montserrat_20,
                                lv_color_hex(0xFFFFFF), 18, 11);
-    ui.top_weather_dot = lv_obj_create(ui.top_bar);
-    lv_obj_remove_style_all(ui.top_weather_dot);
-    lv_obj_set_size(ui.top_weather_dot, 12, 12);
-    lv_obj_set_style_radius(ui.top_weather_dot, 6, 0);
-    lv_obj_set_style_bg_opa(ui.top_weather_dot, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(ui.top_weather_dot, weather_colour(PET_WEATHER_UNKNOWN), 0);
-    lv_obj_set_pos(ui.top_weather_dot, 252, 17);
+    ui.top_weather_icon = create_icon_root(ui.top_bar, TOP_WEATHER_ICON_SIZE, 246, 9);
+    render_weather_icon(ui.top_weather_icon, TOP_WEATHER_ICON_SIZE, PET_WEATHER_UNKNOWN);
     ui.top_weather = create_label(ui.top_bar, "--  -- \xC2\xB0" "C", &lv_font_montserrat_14,
-                                  lv_color_hex(0xFFFFFF), 274, 15);
+                                  lv_color_hex(0xFFFFFF), 280, 15);
 }
 
 static void create_status_card(void)
@@ -1461,6 +1706,7 @@ static void create_today_panel(void)
 
     create_label(ui.today_panel, "TODAY", &lv_font_montserrat_14,
                  lv_color_hex(0x82909E), 28, 22);
+    ui.today_clock_icon = create_clock_icon(ui.today_panel, TODAY_CLOCK_ICON_SIZE, 112, 52);
     ui.today_time = create_label(ui.today_panel, "--:--", &lv_font_montserrat_28,
                                  lv_color_hex(0xFFFFFF), 26, 52);
     ui.today_weekday = create_label(ui.today_panel, "Waiting for Mac", &lv_font_montserrat_20,
@@ -1478,6 +1724,8 @@ static void create_today_panel(void)
 
     create_label(ui.today_panel, "HONG KONG", &lv_font_montserrat_14,
                  lv_color_hex(0x82909E), 28, 195);
+    ui.today_weather_icon = create_icon_root(ui.today_panel, TODAY_WEATHER_ICON_SIZE, 390, 214);
+    render_weather_icon(ui.today_weather_icon, TODAY_WEATHER_ICON_SIZE, PET_WEATHER_UNKNOWN);
     ui.today_temperature = create_label(ui.today_panel, "-- \xC2\xB0" "C", &lv_font_montserrat_28,
                                         lv_color_hex(0xFFFFFF), 28, 224);
     ui.today_condition = create_label(ui.today_panel, "Weather unavailable", &lv_font_montserrat_20,
@@ -1574,7 +1822,7 @@ static void process_command(char *line)
         printf("STATE %s\n", pet_lifecycle_name(get_protocol_state()));
         break;
     case PET_COMMAND_CAPABILITIES:
-        printf("CAPABILITIES 2 lifecycle clock weather today-v1 usage usage-v1 wireless settings-v1\n");
+        printf("CAPABILITIES 2 lifecycle clock weather today-v1 usage usage-v1 quota quota-v1 codexbar-v1 wireless settings-v1\n");
         break;
     case PET_COMMAND_CLOCK:
         if (!bsp_display_lock(1000)) {
@@ -1602,6 +1850,15 @@ static void process_command(char *line)
         apply_usage_locked(&command.data.usage);
         bsp_display_unlock();
         printf("OK USAGE\n");
+        break;
+    case PET_COMMAND_QUOTA:
+        if (!bsp_display_lock(1000)) {
+            printf("ERR display busy\n");
+            break;
+        }
+        apply_quota_locked(&command.data.quota);
+        bsp_display_unlock();
+        printf("OK QUOTA\n");
         break;
     default:
         printf("ERR unknown command\n");
@@ -1664,7 +1921,10 @@ void app_main(void)
     create_ui();
     bsp_display_unlock();
 
-    pet_wireless_result_t wireless_result = pet_wireless_start();
+    pet_wireless_result_t wireless_result = PET_WIRELESS_BACKEND_FAILURE;
+#ifdef CONFIG_CODEX_PET_C6_WIRELESS
+    wireless_result = pet_wireless_start();
+#endif
     if (wireless_result != PET_WIRELESS_OK) {
         ESP_LOGW(TAG, "Wireless backend did not start (%d)", wireless_result);
         if (bsp_display_lock(1000)) {
@@ -1676,8 +1936,8 @@ void app_main(void)
 
     printf("Codex Pet ESP32-P4 ready\n");
     printf("Board: JC4880P443C-I-W\n");
-    printf("Protocol: v2 lifecycle clock weather today-v1 usage-v1 wireless settings-v1\n");
-    printf("Commands: idle running waiting review ping status capabilities clock weather usage\n");
+    printf("Protocol: v2 lifecycle clock weather today-v1 usage-v1 quota-v1 codexbar-v1 wireless settings-v1\n");
+    printf("Commands: idle running waiting review ping status capabilities clock weather usage quota\n");
 
     BaseType_t created = xTaskCreate(serial_task, "codex_pet_serial", 4096, NULL, 5, NULL);
     if (created != pdPASS) ESP_LOGE(TAG, "Could not start Serial task");

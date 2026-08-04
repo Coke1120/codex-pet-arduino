@@ -203,6 +203,29 @@ pet_protocol_result_t pet_protocol_parse(const char *line, pet_command_t *comman
         return PET_PROTOCOL_OK;
     }
 
+    if (strcmp(tokens[0], "quota") == 0) {
+        if (count != 7) return PET_PROTOCOL_INVALID_FORMAT;
+        pet_quota_command_t *quota = &command->data.quota;
+        if (!parse_int(tokens[1], -1, 100, &quota->session_remaining_percent) ||
+            !parse_i64(tokens[2], 0, PET_MAX_UNIX_EPOCH,
+                       &quota->session_reset_epoch) ||
+            !parse_int(tokens[3], -1, 100, &quota->weekly_remaining_percent) ||
+            !parse_i64(tokens[4], 0, PET_MAX_UNIX_EPOCH,
+                       &quota->weekly_reset_epoch) ||
+            !parse_i64(tokens[5], -1, INT64_MAX,
+                       &quota->credits_remaining_tenths) ||
+            !parse_i64(tokens[6], 0, PET_MAX_UNIX_EPOCH,
+                       &quota->updated_epoch)) {
+            return PET_PROTOCOL_OUT_OF_RANGE;
+        }
+        if ((quota->session_remaining_percent < 0 && quota->session_reset_epoch != 0) ||
+            (quota->weekly_remaining_percent < 0 && quota->weekly_reset_epoch != 0)) {
+            return PET_PROTOCOL_OUT_OF_RANGE;
+        }
+        command->type = PET_COMMAND_QUOTA;
+        return PET_PROTOCOL_OK;
+    }
+
     if (count == 1) return PET_PROTOCOL_UNKNOWN;
     return PET_PROTOCOL_INVALID_FORMAT;
 }

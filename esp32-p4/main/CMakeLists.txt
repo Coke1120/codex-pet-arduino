@@ -14,3 +14,6 @@ idf_component_register(
     REQUIRES esp_driver_uart esp_timer esp_event esp_netif esp_wifi bt esp_hosted
              lvgl esp32_p4_jc4880p433c_bsp
 )
+
+# Defer ESP-Hosted initialization until app_main has brought up the display.
+idf_component_set_property(espressif__esp_hosted WHOLE_ARCHIVE FALSE)

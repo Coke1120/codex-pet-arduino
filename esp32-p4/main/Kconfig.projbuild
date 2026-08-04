@@ -1,0 +1,10 @@
+menu "Codex Pet"
+
+config CODEX_PET_C6_WIRELESS
+    bool "Start the ESP32-C6 wireless backend"
+    default n
+    help
+        Enable only after flashing and verifying the matching ESP-Hosted
+        firmware on the onboard ESP32-C6.
+
+endmenu
