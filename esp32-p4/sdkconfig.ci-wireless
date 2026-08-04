@@ -1,0 +1,2 @@
+# Overlay for isolated CI and developer builds of the wireless P4 candidate.
+CONFIG_CODEX_PET_C6_WIRELESS=y

@@ -4,6 +4,8 @@
 import importlib.util
 import io
 import json
+import http.client
+import stat
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -42,9 +44,20 @@ def fake_generic_espressif_port(device: str) -> ListPortInfo:
     return port
 
 
+def hook_record_path(state_dir: Path, digit: str) -> Path:
+    return state_dir / ((digit * 24) + ".json")
+
+
 def write_record(path: Path, state: str, updated_at: float) -> None:
     path.write_text(
-        json.dumps({"version": 1, "state": state, "updated_at": updated_at}),
+        json.dumps(
+            {
+                "version": 1,
+                "state": state,
+                "event": "UserPromptSubmit",
+                "updated_at": updated_at,
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -150,14 +163,12 @@ class AggregationTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             state_dir = Path(temporary)
-            active_path = state_dir / "active.json"
-            stale_path = state_dir / "stale.json"
-            invalid_json_path = state_dir / "invalid-json.json"
-            invalid_state_path = state_dir / "invalid-state.json"
-            future_path = state_dir / "future.json"
+            active_path = hook_record_path(state_dir, "a")
+            stale_path = hook_record_path(state_dir, "b")
+            invalid_state_path = hook_record_path(state_dir, "c")
+            future_path = hook_record_path(state_dir, "d")
             write_record(active_path, "running", 99.0)
             write_record(stale_path, "review", 1.0)
-            invalid_json_path.write_text("{", encoding="utf-8")
             write_record(invalid_state_path, "secret", 99.0)
             write_record(future_path, "waiting", 1000.0)
 
@@ -169,7 +180,6 @@ class AggregationTests(unittest.TestCase):
             self.assertTrue(active_path.exists())
             for pruned in (
                 stale_path,
-                invalid_json_path,
                 invalid_state_path,
                 future_path,
             ):
@@ -178,7 +188,7 @@ class AggregationTests(unittest.TestCase):
 
     def test_transient_read_error_preserves_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "session.json"
+            path = hook_record_path(Path(temporary), "a")
             write_record(path, "running", 99.0)
             with patch.object(Path, "read_text", side_effect=OSError("busy")):
                 active = daemon.read_active_states(
@@ -190,7 +200,7 @@ class AggregationTests(unittest.TestCase):
 
     def test_transient_unlink_error_is_nonfatal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "stale.json"
+            path = hook_record_path(Path(temporary), "a")
             write_record(path, "running", 1.0)
             with patch.object(Path, "unlink", side_effect=OSError("busy")):
                 active = daemon.read_active_states(
@@ -199,6 +209,28 @@ class AggregationTests(unittest.TestCase):
 
             self.assertEqual(active, [])
             self.assertTrue(path.exists())
+
+    def test_unrelated_json_files_are_never_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            unrelated = state_dir / "settings.json"
+            malformed_candidate = hook_record_path(state_dir, "a")
+            wrong_contract = hook_record_path(state_dir, "b")
+            unrelated.write_text('{"theme":"dark"}', encoding="utf-8")
+            malformed_candidate.write_text("{", encoding="utf-8")
+            wrong_contract.write_text(
+                json.dumps({"version": 1, "state": "running", "updated_at": 1}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                daemon.read_active_states(state_dir, now=100.0, active_ttl=10.0),
+                [],
+            )
+
+            self.assertTrue(unrelated.exists())
+            self.assertTrue(malformed_candidate.exists())
+            self.assertTrue(wrong_contract.exists())
 
 
 class ManualBridgeTests(unittest.TestCase):
@@ -219,13 +251,18 @@ class ManualBridgeTests(unittest.TestCase):
         c6 = fake_port("/dev/cu.usbmodem4101", "ESP32-C6 USB JTAG/serial debug unit")
         self.assertEqual(bridge.board_score(unsupported), 0)
         self.assertGreater(bridge.board_score(esp32_p4), bridge.board_score(adapter))
-        self.assertEqual(bridge.board_score(generic_esp), 10)
+        self.assertEqual(bridge.board_score(generic_esp), 0)
         self.assertEqual(bridge.board_score(c6), 0)
         self.assertIn("VID:PID=303A:1001", bridge.port_description(esp32_p4))
         with patch.object(
             bridge, "detected_ports", return_value=[adapter, generic_esp, esp32_p4]
         ):
             self.assertEqual(bridge.choose_port("auto"), esp32_p4.device)
+            self.assertEqual(bridge.choose_port(esp32_p4.device), esp32_p4.device)
+            with self.assertRaisesRegex(SystemExit, "not an identifiable"):
+                bridge.choose_port(adapter.device)
+            with self.assertRaisesRegex(SystemExit, "generic.*rejected"):
+                bridge.choose_port(generic_esp.device)
         second_p4 = fake_port(
             "/dev/cu.usbmodem2201", "JC4880P443C-I-W ESP32-P4"
         )
@@ -233,16 +270,17 @@ class ManualBridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "will not guess"):
                 bridge.choose_port("auto")
 
-    def test_auto_port_accepts_single_generic_espressif_candidate(self) -> None:
+    def test_auto_port_rejects_single_generic_espressif_candidate(self) -> None:
         generic = fake_generic_espressif_port("/dev/cu.usbmodem3101")
         with patch.object(bridge, "detected_ports", return_value=[generic]):
-            self.assertEqual(bridge.choose_port("auto"), generic.device)
+            with self.assertRaisesRegex(SystemExit, "No identifiable"):
+                bridge.choose_port("auto")
 
-    def test_auto_port_rejects_two_generic_espressif_candidates(self) -> None:
+    def test_auto_port_rejects_generic_espressif_candidates(self) -> None:
         first = fake_generic_espressif_port("/dev/cu.usbmodem3101")
         second = fake_generic_espressif_port("/dev/cu.usbmodem4101")
         with patch.object(bridge, "detected_ports", return_value=[first, second]):
-            with self.assertRaisesRegex(SystemExit, "will not guess"):
+            with self.assertRaisesRegex(SystemExit, "No identifiable"):
                 bridge.choose_port("auto")
 
     def test_auto_port_excludes_generic_usb_serial_adapter(self) -> None:
@@ -280,6 +318,10 @@ class ManualBridgeTests(unittest.TestCase):
                         "running",
                     ],
                 ), patch.object(
+                    bridge,
+                    "detected_ports",
+                    return_value=[fake_port("/dev/cu.test", "ESP32-P4")],
+                ), patch.object(
                     bridge.serial, "Serial", return_value=board
                 ), patch.object(
                     bridge.time, "sleep"
@@ -309,15 +351,20 @@ class ManualBridgeTests(unittest.TestCase):
                 "--state",
                 "running",
             ],
-        ), patch.object(bridge.serial, "Serial", return_value=board), patch.object(
-            bridge.time, "sleep"
         ), patch.object(
+            bridge,
+            "detected_ports",
+            return_value=[fake_port("/dev/cu.test", "ESP32-P4")],
+        ), patch.object(
+            bridge.serial, "Serial", return_value=board
+        ) as serial_open, patch.object(bridge.time, "sleep"), patch.object(
             bridge.time, "monotonic", side_effect=lambda: next(ticks) * 0.3
         ):
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 self.assertEqual(bridge.main(), 0)
 
         self.assertEqual(board.writes, [b"ping\n", b"running\n"])
+        self.assertTrue(serial_open.call_args.kwargs["exclusive"])
 
     def test_serial_open_failure_is_reported_without_traceback(self) -> None:
         with patch.object(
@@ -331,6 +378,10 @@ class ManualBridgeTests(unittest.TestCase):
                 "running",
             ],
         ), patch.object(
+            bridge,
+            "detected_ports",
+            return_value=[fake_port("/dev/cu.test", "ESP32-P4")],
+        ), patch.object(
             bridge.serial,
             "Serial",
             side_effect=bridge.serial.SerialException("busy"),
@@ -340,6 +391,14 @@ class ManualBridgeTests(unittest.TestCase):
                 self.assertEqual(bridge.main(), 1)
 
         self.assertIn("Serial error: busy", stderr.getvalue())
+
+    def test_baud_must_be_positive_and_bounded(self) -> None:
+        self.assertEqual(bridge.valid_baud("115200"), 115200)
+        for raw in ("0", "-1", str(bridge.MAX_BAUD + 1), "1.5"):
+            with self.subTest(raw=raw), self.assertRaises(
+                bridge.argparse.ArgumentTypeError
+            ):
+                bridge.valid_baud(raw)
 
 
 class FakeBoard:
@@ -386,8 +445,10 @@ class DaemonPortTests(unittest.TestCase):
 
         with patch.object(daemon, "detected_ports", return_value=[first]):
             self.assertEqual(daemon.choose_port("auto"), first.device)
+            self.assertEqual(daemon.choose_port(first.device), first.device)
         with patch.object(daemon, "detected_ports", return_value=[adapter]):
             self.assertIsNone(daemon.choose_port("auto"))
+            self.assertIsNone(daemon.choose_port(adapter.device))
         with patch.object(daemon, "detected_ports", return_value=[first, second]):
             self.assertIsNone(daemon.choose_port("auto"))
         with patch.object(daemon, "detected_ports", return_value=[unsupported, first]):
@@ -396,12 +457,13 @@ class DaemonPortTests(unittest.TestCase):
         with patch.object(daemon, "detected_ports", return_value=[generic, first]):
             self.assertEqual(daemon.choose_port("auto"), first.device)
 
-    def test_auto_port_accepts_single_generic_espressif_candidate(self) -> None:
+    def test_auto_port_rejects_single_generic_espressif_candidate(self) -> None:
         generic = fake_generic_espressif_port("/dev/cu.usbmodem3101")
         with patch.object(daemon, "detected_ports", return_value=[generic]):
-            self.assertEqual(daemon.choose_port("auto"), generic.device)
+            self.assertIsNone(daemon.choose_port("auto"))
+            self.assertIsNone(daemon.choose_port(generic.device))
 
-    def test_auto_port_rejects_two_generic_espressif_candidates(self) -> None:
+    def test_auto_port_rejects_generic_espressif_candidates(self) -> None:
         first = fake_generic_espressif_port("/dev/cu.usbmodem3101")
         second = fake_generic_espressif_port("/dev/cu.usbmodem4101")
         with patch.object(daemon, "detected_ports", return_value=[first, second]):
@@ -417,6 +479,32 @@ class DaemonPortTests(unittest.TestCase):
         self.assertTrue(daemon.should_warn_port(0.0, 0.0))
         self.assertFalse(daemon.should_warn_port(29.99, 30.0))
         self.assertTrue(daemon.should_warn_port(30.0, 30.0))
+
+    def test_exclusive_serial_lock_failure_is_reported_clearly(self) -> None:
+        error = daemon.serial.SerialException(
+            "Could not exclusively lock port /dev/cu.test: busy"
+        )
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            daemon.sys,
+            "argv",
+            [
+                "codex_pet_daemon.py",
+                "--state-dir",
+                temporary,
+                "--port",
+                "/dev/cu.test",
+                "--once",
+            ],
+        ), patch.object(
+            daemon, "choose_port", return_value="/dev/cu.test"
+        ), patch.object(
+            daemon, "P4Link", side_effect=error
+        ), patch.object(
+            daemon.signal, "signal"
+        ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(daemon.main(), 1)
+
+        self.assertIn("Could not exclusively lock port", stderr.getvalue())
 
 
 class P4LinkTests(unittest.TestCase):
@@ -440,6 +528,15 @@ class P4LinkTests(unittest.TestCase):
         self.assertEqual(board.reset_count, 1)
         self.assertTrue(board.closed)
         self.assertEqual(link.capabilities, {"clock", "weather", "usage"})
+
+    def test_constructor_requests_exclusive_serial_ownership(self) -> None:
+        board = FakeBoard([b"pong\n", b"CAPABILITIES clock\n"])
+        with patch.object(
+            daemon.serial, "Serial", return_value=board
+        ) as serial_open, patch.object(daemon.time, "sleep"):
+            daemon.P4Link("/dev/cu.test")
+
+        self.assertTrue(serial_open.call_args.kwargs["exclusive"])
 
     def test_capability_probe_enables_only_known_v2_features(self) -> None:
         board = FakeBoard(
@@ -577,6 +674,14 @@ class HeartbeatTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 with self.assertRaises(daemon.argparse.ArgumentTypeError):
                     daemon.positive_float(raw)
+
+    def test_baud_must_be_positive_and_bounded(self) -> None:
+        self.assertEqual(daemon.valid_baud("115200"), 115200)
+        for raw in ("0", "-1", str(daemon.MAX_BAUD + 1), "1.5"):
+            with self.subTest(raw=raw), self.assertRaises(
+                daemon.argparse.ArgumentTypeError
+            ):
+                daemon.valid_baud(raw)
 
 
 class WeatherSyncTests(unittest.TestCase):
@@ -750,6 +855,60 @@ class WeatherSyncTests(unittest.TestCase):
             self.assertEqual(worker.snapshot(), snapshot)
             self.assertEqual(worker.last_error(), "OSError: offline")
             self.assertEqual(stop.delays, [60.0])
+
+    def test_weather_worker_retries_http_protocol_failures(self) -> None:
+        class OneIterationStop:
+            stopped = False
+
+            def __init__(self):
+                self.delays = []
+
+            def is_set(self):
+                return self.stopped
+
+            def wait(self, delay):
+                self.delays.append(delay)
+                self.stopped = True
+
+        with tempfile.TemporaryDirectory() as temporary:
+            worker = daemon.WeatherWorker(
+                Path(temporary) / "weather-cache.json",
+                retry_interval=7.0,
+                fetcher=unittest.mock.Mock(
+                    side_effect=http.client.IncompleteRead(b"partial")
+                ),
+            )
+            stop = OneIterationStop()
+            worker._stop = stop
+
+            worker._run()
+
+            self.assertIsNone(worker.snapshot())
+            self.assertIn("IncompleteRead", worker.last_error())
+            self.assertEqual(stop.delays, [7.0])
+
+    def test_weather_cache_write_is_private_atomic_and_unique(self) -> None:
+        snapshot = daemon.WeatherSnapshot(29, 27, 32, 82, "rain", 200)
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary) / "cache"
+            parent.mkdir(mode=0o755)
+            cache = parent / "weather-cache.json"
+            old_shared_temp = parent / "weather-cache.json.tmp"
+            old_shared_temp.write_text("unrelated", encoding="utf-8")
+
+            daemon._save_weather_cache(cache, snapshot)
+
+            self.assertEqual(stat.S_IMODE(parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(cache.stat().st_mode), 0o600)
+            self.assertEqual(old_shared_temp.read_text(encoding="utf-8"), "unrelated")
+            self.assertEqual(
+                [
+                    path
+                    for path in parent.iterdir()
+                    if path.name.startswith(".weather-cache.json-")
+                ],
+                [],
+            )
 
     def test_weather_worker_success_replaces_cache_and_uses_refresh_delay(
         self,

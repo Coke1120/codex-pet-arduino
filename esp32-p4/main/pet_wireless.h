@@ -79,6 +79,7 @@ pet_wireless_result_t pet_wireless_ble_set_enabled(bool enabled);
 
 /* Pure helpers used by the firmware and host tests. */
 bool pet_wireless_credentials_valid(const char *ssid, const char *password);
+bool pet_wireless_deadline_expired(int64_t now_us, int64_t deadline_us);
 void pet_wireless_scan_reset(pet_wireless_snapshot_t *snapshot);
 void pet_wireless_scan_add(pet_wireless_snapshot_t *snapshot,
                            const pet_wireless_access_point_t *access_point);

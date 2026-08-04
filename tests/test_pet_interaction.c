@@ -11,6 +11,8 @@ int main(void)
     assert(pet_panel_progress_from_drag(0, -100, 510) == 0);
     assert(pet_panel_progress_from_drag(1000, 100, 510) == 1000);
     assert(pet_panel_progress_from_drag(0, 255, 510) == 500);
+    assert(pet_panel_progress_from_drag(INT32_MAX, INT32_MAX, 1) == 1000);
+    assert(pet_panel_progress_from_drag(INT32_MIN, INT32_MIN, 1) == 0);
     assert(pet_panel_release_target(429, 0) == 0);
     assert(pet_panel_release_target(430, 0) == 1000);
     assert(pet_panel_release_target(100, 55) == 1000);

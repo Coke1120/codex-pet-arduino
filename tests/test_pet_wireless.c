@@ -22,12 +22,26 @@ int main(void)
     assert(pet_wireless_credentials_valid("Codex", "12345678"));
     assert(pet_wireless_credentials_valid("Codex", "123456789012345678901234567890123456789012345678901234567890123"));
     assert(!pet_wireless_credentials_valid("Codex", "1234567890123456789012345678901234567890123456789012345678901234"));
+    assert(!pet_wireless_deadline_expired(100, 0));
+    assert(!pet_wireless_deadline_expired(99, 100));
+    assert(pet_wireless_deadline_expired(100, 100));
+
+    pet_wireless_access_point_t nonterminated = {.rssi = -1, .open = true};
+    memset(nonterminated.ssid, 'x', sizeof(nonterminated.ssid));
+    const pet_wireless_access_point_t maximum_ssid =
+        ap("12345678901234567890123456789012", -2, true);
 
     pet_wireless_snapshot_t snapshot = {0};
     const pet_wireless_access_point_t weak = ap("weak", -80, true);
     const pet_wireless_access_point_t strong = ap("strong", -20, false);
     const pet_wireless_access_point_t duplicate_weak = ap("strong", -70, true);
     const pet_wireless_access_point_t duplicate_strong = ap("weak", -10, false);
+    pet_wireless_scan_add(&snapshot, &nonterminated);
+    assert(snapshot.scan_result_count == 0U);
+    pet_wireless_scan_add(&snapshot, &maximum_ssid);
+    assert(snapshot.scan_result_count == 1U);
+    assert(snapshot.scan_results[0].ssid[PET_WIRELESS_MAX_SSID_LEN] == '\0');
+    pet_wireless_scan_reset(&snapshot);
     pet_wireless_scan_add(&snapshot, &weak);
     pet_wireless_scan_add(&snapshot, &strong);
     pet_wireless_scan_add(&snapshot, &duplicate_weak);

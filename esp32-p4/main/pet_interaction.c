@@ -18,7 +18,11 @@ int32_t pet_panel_progress_from_drag(int32_t start_progress, int32_t delta_y,
                                      int32_t panel_height)
 {
     if (panel_height <= 0) return clamp_progress(start_progress);
-    return clamp_progress(start_progress + delta_y * PET_PANEL_PROGRESS_MAX / panel_height);
+    int64_t progress = (int64_t)start_progress +
+        (int64_t)delta_y * PET_PANEL_PROGRESS_MAX / panel_height;
+    if (progress < 0) return 0;
+    if (progress > PET_PANEL_PROGRESS_MAX) return PET_PANEL_PROGRESS_MAX;
+    return (int32_t)progress;
 }
 
 int32_t pet_panel_release_target(int32_t progress, int32_t delta_y)

@@ -15,54 +15,137 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.9"
-      - run: python -m pip install -r mac/requirements.txt
+      - name: Install hash-locked host dependencies
+        run: python -m pip install --require-hashes -r mac/requirements.txt
       - run: python -m unittest discover -s tests -v
       - run: python -c "import glob, py_compile; [py_compile.compile(p, doraise=True) for pattern in ('mac/*.py', 'tools/*.py', 'tests/*.py') for p in glob.glob(pattern)]"
 
   esp32-p4-firmware:
     runs-on: ubuntu-latest
     env:
-      # Link a rights-safe payload with the same 6,790,752-byte footprint as
-      # the private 73-frame v2 atlas instead of measuring the tiny demo tile.
-      CODEX_PET_SIZE_FIXTURE: "1"
+      P4_DEFAULTS: ${{ github.workspace }}/esp32-p4/sdkconfig.defaults
+      P4_WIRELESS_DEFAULTS: ${{ github.workspace }}/esp32-p4/sdkconfig.ci-wireless
+      P4_SAFE_BUILD: ${{ runner.temp }}/codex-pet-p4-display-safe-build
+      P4_SAFE_SDKCONFIG: ${{ runner.temp }}/codex-pet-p4-display-safe-sdkconfig
+      P4_WIRELESS_BUILD: ${{ runner.temp }}/codex-pet-p4-wireless-build
+      P4_WIRELESS_SDKCONFIG: ${{ runner.temp }}/codex-pet-p4-wireless-sdkconfig
+      P4_FIXTURE_SAFE_BUILD: ${{ runner.temp }}/codex-pet-p4-fixture-safe-build
+      P4_FIXTURE_SAFE_SDKCONFIG: ${{ runner.temp }}/codex-pet-p4-fixture-safe-sdkconfig
+      P4_FIXTURE_WIRELESS_BUILD: ${{ runner.temp }}/codex-pet-p4-fixture-wireless-build
+      P4_FIXTURE_WIRELESS_SDKCONFIG: ${{ runner.temp }}/codex-pet-p4-fixture-wireless-sdkconfig
+      C6_BUILD: ${{ runner.temp }}/codex-pet-c6-build
+      C6_SDKCONFIG: ${{ runner.temp }}/codex-pet-c6-sdkconfig
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: espressif/install-esp-idf-action@8fc05d1470d5591417e7a3707a1f2bec178db4ae # v1 branch snapshot
         with:
           version: v5.5.1
-      - name: Configure representative full-v2 firmware
+      - name: Configure isolated real ESP32-P4 variants
         working-directory: esp32-p4
         run: |
-          idf.py set-target esp32p4
-          grep -q '^CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y$' sdkconfig
-          grep -q '^CONFIG_SPIRAM_MODE_HEX=y$' sdkconfig
-          grep -q '^CONFIG_SPIRAM_SPEED_80M=y$' sdkconfig
-          grep -q '^CONFIG_LV_DRAW_SW_SUPPORT_RGB565A8=y$' sdkconfig
-          grep -q '^CONFIG_PARTITION_TABLE_CUSTOM=y$' sdkconfig
-          grep -q '^CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED=y$' sdkconfig
-          grep -q '^CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y$' sdkconfig
-          grep -q '^CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD=y$' sdkconfig
-          grep -q '^CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y$' sdkconfig
-          grep -q '^CONFIG_BT_NIMBLE_ENABLED=y$' sdkconfig
-          grep -q '^CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y$' sdkconfig
+          idf.py -B "$P4_SAFE_BUILD" \
+            -D "SDKCONFIG=$P4_SAFE_SDKCONFIG" \
+            -D "SDKCONFIG_DEFAULTS=$P4_DEFAULTS" \
+            -D "CMAKE_EXPORT_COMPILE_COMMANDS=ON" \
+            set-target esp32p4
+          idf.py -B "$P4_WIRELESS_BUILD" \
+            -D "SDKCONFIG=$P4_WIRELESS_SDKCONFIG" \
+            -D "SDKCONFIG_DEFAULTS=$P4_DEFAULTS;$P4_WIRELESS_DEFAULTS" \
+            -D "CMAKE_EXPORT_COMPILE_COMMANDS=ON" \
+            set-target esp32p4
+
+          verify_common_config() {
+            config="$1"
+            grep -q '^CONFIG_ESP_MAIN_TASK_STACK_SIZE=7680$' "$config"
+            grep -q '^CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y$' "$config"
+            grep -q '^CONFIG_SPIRAM_MODE_HEX=y$' "$config"
+            grep -q '^CONFIG_SPIRAM_SPEED_80M=y$' "$config"
+            grep -q '^CONFIG_LV_DRAW_SW_SUPPORT_RGB565A8=y$' "$config"
+            grep -q '^CONFIG_PARTITION_TABLE_CUSTOM=y$' "$config"
+            grep -q '^CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED=y$' "$config"
+            grep -q '^CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y$' "$config"
+            grep -q '^CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD=y$' "$config"
+            grep -q '^CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y$' "$config"
+            grep -q '^CONFIG_BT_NIMBLE_ENABLED=y$' "$config"
+            grep -q '^CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y$' "$config"
+          }
+
+          verify_common_config "$P4_SAFE_SDKCONFIG"
+          verify_common_config "$P4_WIRELESS_SDKCONFIG"
+          grep -q '^# CONFIG_CODEX_PET_C6_WIRELESS is not set$' "$P4_SAFE_SDKCONFIG"
+          grep -q '^CONFIG_CODEX_PET_C6_WIRELESS=y$' "$P4_WIRELESS_SDKCONFIG"
           test "$(git -C .. status --porcelain -- esp32-p4/dependencies.lock)" = ""
-      - name: Build representative full-v2 firmware
+
+      - name: Configure isolated ESP32-P4 size fixtures
         working-directory: esp32-p4
-        run: idf.py build
+        env:
+          CODEX_PET_SIZE_FIXTURE: "1"
+        run: |
+          idf.py -B "$P4_FIXTURE_SAFE_BUILD" \
+            -D "SDKCONFIG=$P4_FIXTURE_SAFE_SDKCONFIG" \
+            -D "SDKCONFIG_DEFAULTS=$P4_DEFAULTS" \
+            -D "CMAKE_EXPORT_COMPILE_COMMANDS=ON" \
+            set-target esp32p4
+          idf.py -B "$P4_FIXTURE_WIRELESS_BUILD" \
+            -D "SDKCONFIG=$P4_FIXTURE_WIRELESS_SDKCONFIG" \
+            -D "SDKCONFIG_DEFAULTS=$P4_DEFAULTS;$P4_WIRELESS_DEFAULTS" \
+            -D "CMAKE_EXPORT_COMPILE_COMMANDS=ON" \
+            set-target esp32p4
+
+          verify_common_config() {
+            config="$1"
+            grep -q '^CONFIG_ESP_MAIN_TASK_STACK_SIZE=7680$' "$config"
+            grep -q '^CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y$' "$config"
+            grep -q '^CONFIG_SPIRAM_MODE_HEX=y$' "$config"
+            grep -q '^CONFIG_SPIRAM_SPEED_80M=y$' "$config"
+            grep -q '^CONFIG_LV_DRAW_SW_SUPPORT_RGB565A8=y$' "$config"
+            grep -q '^CONFIG_PARTITION_TABLE_CUSTOM=y$' "$config"
+            grep -q '^CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED=y$' "$config"
+            grep -q '^CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y$' "$config"
+            grep -q '^CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD=y$' "$config"
+            grep -q '^CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y$' "$config"
+            grep -q '^CONFIG_BT_NIMBLE_ENABLED=y$' "$config"
+            grep -q '^CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y$' "$config"
+          }
+
+          verify_common_config "$P4_FIXTURE_SAFE_SDKCONFIG"
+          verify_common_config "$P4_FIXTURE_WIRELESS_SDKCONFIG"
+          grep -q '^# CONFIG_CODEX_PET_C6_WIRELESS is not set$' "$P4_FIXTURE_SAFE_SDKCONFIG"
+          grep -q '^CONFIG_CODEX_PET_C6_WIRELESS=y$' "$P4_FIXTURE_WIRELESS_SDKCONFIG"
+          test "$(git -C .. status --porcelain -- esp32-p4/dependencies.lock)" = ""
+
+      - name: Build display-safe public/demo ESP32-P4 firmware
+        working-directory: esp32-p4
+        run: idf.py -B "$P4_SAFE_BUILD" build
+      - name: Build wireless-enabled public/demo ESP32-P4 firmware
+        working-directory: esp32-p4
+        run: idf.py -B "$P4_WIRELESS_BUILD" build
+
+      - name: Build display-safe ESP32-P4 size fixture
+        working-directory: esp32-p4
+        env:
+          CODEX_PET_SIZE_FIXTURE: "1"
+        run: idf.py -B "$P4_FIXTURE_SAFE_BUILD" build
+      - name: Build wireless-enabled ESP32-P4 size fixture
+        working-directory: esp32-p4
+        env:
+          CODEX_PET_SIZE_FIXTURE: "1"
+        run: idf.py -B "$P4_FIXTURE_WIRELESS_BUILD" build
+
       - name: Build matching ESP32-C6 radio firmware
         working-directory: esp32-p4
         run: |
           slave_project=managed_components/espressif__esp_hosted/slave
-          slave_build="$RUNNER_TEMP/codex-pet-c6-build"
-          idf.py -C "$slave_project" -B "$slave_build" set-target esp32c6
-          grep -q '^CONFIG_IDF_TARGET_ESP32C6=y$' "$slave_project/sdkconfig"
-          grep -q '^CONFIG_ESP_SDIO_HOST_INTERFACE=y$' "$slave_project/sdkconfig"
-          grep -q '^CONFIG_BT_ENABLED=y$' "$slave_project/sdkconfig"
-          idf.py -C "$slave_project" -B "$slave_build" build
-      - name: Verify protocol parser and firmware size margin
+          idf.py -C "$slave_project" -B "$C6_BUILD" \
+            -D "SDKCONFIG=$C6_SDKCONFIG" set-target esp32c6
+          grep -q '^CONFIG_IDF_TARGET_ESP32C6=y$' "$C6_SDKCONFIG"
+          grep -q '^CONFIG_ESP_SDIO_HOST_INTERFACE=y$' "$C6_SDKCONFIG"
+          grep -q '^CONFIG_BT_ENABLED=y$' "$C6_SDKCONFIG"
+          idf.py -C "$slave_project" -B "$C6_BUILD" build
+      - name: Verify host-side firmware logic
         run: |
           # ESP-IDF prepends RISC-V binutils; keep host tests on the native
-          # assembler, then return to the IDF PATH for target symbol checks.
+          # assembler for the portable protocol/model checks.
           env PATH=/usr/bin:/bin /usr/bin/cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=undefined tests/test_pet_protocol.c esp32-p4/main/pet_protocol.c -Iesp32-p4/main -o /tmp/pet_protocol_test
           /tmp/pet_protocol_test
           env PATH=/usr/bin:/bin /usr/bin/cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=undefined tests/test_pet_interaction.c esp32-p4/main/pet_interaction.c -Iesp32-p4/main -o /tmp/pet_interaction_test
@@ -71,6 +154,169 @@ jobs:
           /tmp/pet_wireless_test
           env PATH=/usr/bin:/bin /usr/bin/cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=undefined tests/test_pet_wireless_ble_lifecycle.c esp32-p4/main/pet_wireless_ble_lifecycle.c -Iesp32-p4/main -o /tmp/pet_wireless_ble_lifecycle_test
           /tmp/pet_wireless_ble_lifecycle_test
-          riscv32-esp-elf-nm -S --size-sort esp32-p4/build/codex_pet_jc4880p443c.elf | grep -Eq '^[[:xdigit:]]+ 00679e60 [rR] pet_size_fixture_payload$'
-          riscv32-esp-elf-nm -S --size-sort esp32-p4/build/codex_pet_jc4880p443c.elf | grep -Eq '^[[:xdigit:]]+ 000007fc [rR] pet_size_fixture_images$'
-          python -c "from pathlib import Path; size=Path('esp32-p4/build/codex_pet_jc4880p443c.bin').stat().st_size; limit=0xF70000; assert size <= limit - 0x80000, f'firmware leaves less than 512 KiB margin: {size}/{limit}'"
+
+      - name: Verify public/demo ESP32-P4 assets
+        run: |
+          for build in "$P4_SAFE_BUILD" "$P4_WIRELESS_BUILD"; do
+            elf="$build/codex_pet_jc4880p443c.elf"
+            grep -Fq 'pet_demo.c' "$build/compile_commands.json"
+            symbols="$(riscv32-esp-elf-nm -S --size-sort "$elf")"
+            grep -Eq '[[:space:]]pet_demo_map$' <<<"$symbols"
+            if grep -Eq '[[:space:]]pet_size_fixture_payload$' <<<"$symbols"; then
+              echo "fixture payload symbol leaked into real build: $build" >&2
+              exit 1
+            fi
+            if grep -Eq '[[:space:]]pet_size_fixture_images$' <<<"$symbols"; then
+              echo "fixture image symbol leaked into real build: $build" >&2
+              exit 1
+            fi
+          done
+
+      - name: Enforce ESP32-P4 stack and frame gates
+        run: |
+          python - "$P4_SAFE_BUILD" "$P4_WIRELESS_BUILD" \
+            "$P4_FIXTURE_SAFE_BUILD" "$P4_FIXTURE_WIRELESS_BUILD" <<'PY'
+          import sys
+          from pathlib import Path
+
+          stack_limit = 768
+
+          def sort_key(record):
+              size, qualifier, symbol, usage_file = record
+              return size, qualifier, symbol, str(usage_file)
+
+          for build_arg in sys.argv[1:]:
+              build = Path(build_arg)
+              records = []
+              for usage_file in sorted(build.rglob("*.su")):
+                  for raw_line in usage_file.read_text(encoding="utf-8").splitlines():
+                      fields = raw_line.rsplit("\t", 2)
+                      if len(fields) != 3:
+                          continue
+                      symbol, byte_count, qualifier = fields
+                      try:
+                          size = int(byte_count)
+                      except ValueError:
+                          continue
+                      records.append((size, qualifier, symbol, usage_file))
+
+              if not records:
+                  raise SystemExit(f"no -fstack-usage reports found under {build}")
+
+              report = build / "stack-usage.tsv"
+              with report.open("w", encoding="utf-8") as handle:
+                  handle.write("bytes\tqualifier\tsymbol\tfile\n")
+                  for size, qualifier, symbol, usage_file in sorted(
+                      records, key=sort_key, reverse=True
+                  ):
+                      handle.write(
+                          f"{size}\t{qualifier}\t{symbol}\t{usage_file.relative_to(build)}\n"
+                      )
+
+              violations = [record for record in records if record[0] > stack_limit]
+              if violations:
+                  details = "\n".join(
+                      f"{size} bytes: {symbol} ({usage_file})"
+                      for size, _qualifier, symbol, usage_file in sorted(
+                          violations, key=sort_key, reverse=True
+                      )
+                  )
+                  raise SystemExit(
+                      f"stack usage exceeds {stack_limit} bytes in {build}:\n{details}"
+                  )
+          PY
+
+          for build in "$P4_SAFE_BUILD" "$P4_WIRELESS_BUILD" \
+            "$P4_FIXTURE_SAFE_BUILD" "$P4_FIXTURE_WIRELESS_BUILD"; do
+            # -Werror=frame-larger-than=768 is applied component-locally; a
+            # successful build therefore enforces the compiler frame gate.
+            idf.py -C esp32-p4 -B "$build" size-components > "$build/size-components.txt"
+            idf.py -C esp32-p4 -B "$build" size-files > "$build/size-files.txt"
+          done
+
+      - name: Enforce ESP32-P4 fixture size and wireless gates
+        run: |
+          for config in "$P4_FIXTURE_SAFE_SDKCONFIG" "$P4_FIXTURE_WIRELESS_SDKCONFIG"; do
+            grep -q '^CONFIG_ESP_MAIN_TASK_STACK_SIZE=7680$' "$config"
+          done
+          grep -q '^# CONFIG_CODEX_PET_C6_WIRELESS is not set$' "$P4_FIXTURE_SAFE_SDKCONFIG"
+          grep -q '^CONFIG_CODEX_PET_C6_WIRELESS=y$' "$P4_FIXTURE_WIRELESS_SDKCONFIG"
+
+          for build in "$P4_FIXTURE_SAFE_BUILD" "$P4_FIXTURE_WIRELESS_BUILD"; do
+            symbols="$(riscv32-esp-elf-nm -S --size-sort "$build/codex_pet_jc4880p443c.elf")"
+            grep -Eq '^[[:xdigit:]]+ 00679e60 [rR] pet_size_fixture_payload$' <<<"$symbols"
+            grep -Eq '^[[:xdigit:]]+ 000007fc [rR] pet_size_fixture_images$' <<<"$symbols"
+            python - "$build/codex_pet_jc4880p443c.bin" <<'PY'
+          import sys
+          from pathlib import Path
+
+          firmware = Path(sys.argv[1])
+          size = firmware.stat().st_size
+          limit = 0xF70000
+          assert size <= limit - 0x80000, (
+              f"firmware leaves less than 512 KiB margin: {size}/{limit}"
+          )
+          PY
+          done
+
+      - name: Upload display-safe ESP32-P4 diagnostics
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: esp32-p4-display-safe-diagnostics-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ env.P4_SAFE_BUILD }}/flasher_args.json
+            ${{ env.P4_SAFE_BUILD }}/size-components.txt
+            ${{ env.P4_SAFE_BUILD }}/size-files.txt
+            ${{ env.P4_SAFE_BUILD }}/stack-usage.tsv
+            ${{ env.P4_SAFE_SDKCONFIG }}
+
+      - name: Upload wireless ESP32-P4 diagnostics
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: esp32-p4-wireless-diagnostics-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ env.P4_WIRELESS_BUILD }}/flasher_args.json
+            ${{ env.P4_WIRELESS_BUILD }}/size-components.txt
+            ${{ env.P4_WIRELESS_BUILD }}/size-files.txt
+            ${{ env.P4_WIRELESS_BUILD }}/stack-usage.tsv
+            ${{ env.P4_WIRELESS_SDKCONFIG }}
+
+      - name: Upload display-safe ESP32-P4 fixture diagnostics
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: esp32-p4-display-safe-fixture-diagnostics-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ env.P4_FIXTURE_SAFE_BUILD }}/flasher_args.json
+            ${{ env.P4_FIXTURE_SAFE_BUILD }}/size-components.txt
+            ${{ env.P4_FIXTURE_SAFE_BUILD }}/size-files.txt
+            ${{ env.P4_FIXTURE_SAFE_BUILD }}/stack-usage.tsv
+            ${{ env.P4_FIXTURE_SAFE_SDKCONFIG }}
+
+      - name: Upload wireless ESP32-P4 fixture diagnostics
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: esp32-p4-wireless-fixture-diagnostics-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ env.P4_FIXTURE_WIRELESS_BUILD }}/flasher_args.json
+            ${{ env.P4_FIXTURE_WIRELESS_BUILD }}/size-components.txt
+            ${{ env.P4_FIXTURE_WIRELESS_BUILD }}/size-files.txt
+            ${{ env.P4_FIXTURE_WIRELESS_BUILD }}/stack-usage.tsv
+            ${{ env.P4_FIXTURE_WIRELESS_SDKCONFIG }}
+
+      - name: Upload matching ESP32-C6 diagnostics
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: esp32-c6-radio-diagnostics-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ env.C6_BUILD }}/flasher_args.json
+            ${{ env.C6_SDKCONFIG }}

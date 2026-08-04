@@ -7,6 +7,7 @@
 - [Establish identity](#establish-identity)
 - [Test the P4 protocol directly](#test-the-p4-protocol-directly)
 - [Diagnose an always-idle pet](#diagnose-an-always-idle-pet)
+- [Verify the installed hook path and trust](#verify-the-installed-hook-path-and-trust)
 - [Verify clock and weather](#verify-clock-and-weather)
 - [Verify CodexBar quota](#verify-codexbar-quota)
 - [Install and inspect the daemon](#install-and-inspect-the-daemon)
@@ -21,7 +22,7 @@ Do not collapse these layers into one success claim:
 | Firmware protocol | Exact `ping`, `status`, and `capabilities` replies |
 | Direct data path | Exact ACK for injected `clock`, `weather`, and `quota` commands |
 | Hook mapping | Privacy-safe state file changes for known Codex events |
-| Daemon | One process owns the verified P4 port and negotiates current capabilities |
+| Daemon | One process exclusively owns the USB-identified P4 port and negotiates current capabilities |
 | Provider | Open-Meteo or CodexBar returns a valid snapshot |
 | Physical UI | The observer confirms the expected state and values on the panel |
 
@@ -32,12 +33,14 @@ prove Serial delivery. Readiness or an ACK does not prove visible pixels.
 
 - Stop direct bridges, monitors, and the LaunchAgent before opening Serial.
 - Do not use a CH340 port as the P4 application console.
-- Keep one persistent Serial owner; reopening the port can reset the board.
+- Keep one exclusive, persistent Serial owner; reopening the port can reset the board.
 - Merge Codex hooks without replacing unrelated hooks. Keep hook trust user-controlled.
 - Never log prompts, transcripts, tool output, working directories, Wi-Fi passwords,
   CodexBar email, account identity, or raw OAuth JSON.
 - Obtain explicit authorization before a live CodexBar OAuth refresh. A version
   check or fixture test is not live account access.
+- Wi-Fi credentials never enter the host runtime. The optional P4/C6 wireless
+  candidate keeps them in RAM only, loses them on reboot, and requires reconnect.
 - Use `$embedded-display-development` before any flash or P4/C6 hardware change.
 
 ## Establish identity
@@ -63,7 +66,13 @@ shasum -a 256 \
 Reinstall after source changes instead of debugging a stale runtime. Identify the
 exact P4 `/dev/cu.*` port and run `lsof "$PORT"` before opening it. Automatic
 selection must remain unambiguous; pass `--port` when multiple Espressif devices
-are attached.
+are attached. Explicit selection is not a bypass: current USB metadata must still
+identify a supported P4 by the exact `ESP32-P4` or `JC4880P443C` descriptor; C6
+metadata, generic Espressif VID `303A` `USB JTAG/serial debug unit` metadata, and
+generic CH340 paths are not accepted. There is no generic-descriptor override.
+Require no owner before the test and one expected exclusive owner after opening
+the port. The bridge must complete the exact P4 `ping` handshake before a state
+write; the daemon must complete both `ping` and capability negotiation first.
 
 ## Test the P4 protocol directly
 
@@ -124,6 +133,28 @@ Multiple sessions aggregate by `waiting` → `review` → `running` → `idle`.
 Records expire after 15 minutes by default. A manual status-card state is a panel
 test and is replaced by the daemon heartbeat.
 
+The hook records only `version`, mapped state, an allow-listed event name, and a
+timestamp under a hashed 24-hex session filename. Require the sessions directory
+to be mode `0700` and each record mode `0600`. Prompts, transcripts, tool output,
+working directories, Wi-Fi credentials, and account identity must not appear.
+Malformed or foreign JSON must not become lifecycle state.
+
+## Verify the installed hook path and trust
+
+macOS may allow an interactive shell to read repository source under
+`Documents` while denying the Codex/background hook process. Use the isolated
+runtime path:
+
+```text
+~/Library/Application Support/CodexPet/runtime/codex_pet_hook.py
+```
+
+After `bash mac/install.sh`, compare its SHA-256 with
+`mac/codex_pet_hook.py`. Merge Codex Pet hook entries without replacing unrelated
+hooks, restart Codex, open `/hooks`, inspect the exact commands, and trust only
+the verified Application Support path. Interactive readability and a successful
+fixture invocation do not prove the post-restart Codex trust/runtime layer.
+
 ## Verify clock and weather
 
 The daemon sends local time once per minute and advances time on the P4 between
@@ -170,8 +201,22 @@ Install or update the isolated runtime only after direct protocol tests:
 bash mac/install.sh --port /dev/cu.<verified-p4-port>
 ```
 
-The current service label is `com.coke1120.codex-pet`; the installer removes the
-legacy competing label. Inspect service state and logs:
+The current service label is `com.coke1120.codex-pet`. New plists carry a Codex
+Pet managed marker; an unmarked legacy/custom plist is recognized only when its
+normalized Python and daemon paths exactly match the current runtime. The
+installer stages the full venv/runtime off-path, including hash-locked
+dependencies, while leaving the live runtime untouched. It prepares the new
+plist off-path and snapshots every affected plist and loaded state before
+unloading recognized competitors and the selected service. It swaps the staged
+runtime and replaces the selected plist only after those checks pass. A partial
+unload, runtime/plist replacement, cleanup, or bootstrap failure restores the
+original runtime and plist files before re-bootstrapping only the previously
+loaded jobs. If runtime restoration fails, prior jobs remain stopped. Treat an explicit
+`rollback incomplete` diagnostic as a failed installation requiring manual
+launchd inspection. Because launchd state cannot be reconciled safely in that
+mode, `--skip-launchctl` refuses a label
+migration when a competing recognized/default/legacy plist exists; use it only
+for a same-label file refresh. Inspect service state and logs:
 
 ```bash
 launchctl print "gui/$(id -u)/com.coke1120.codex-pet"
@@ -188,9 +233,10 @@ warnings should be deduplicated and clear after a successful refresh.
 Report:
 
 1. Source and installed-runtime identity.
-2. Exact P4 port and its sole owner.
+2. Exact P4 port, USB identity, explicit identity decision, and sole exclusive owner.
 3. Exact direct protocol requests and replies.
-4. Hook fixture and real lifecycle transition results.
+4. Privacy-safe hook fixture, installed-runtime hash, `/hooks` path/trust review,
+   file modes, and real lifecycle transition results.
 5. Daemon service state, negotiated capabilities, and relevant sanitized logs.
 6. Clock, weather, and CodexBar retrieval outcomes separately.
 7. Sanitized quota numbers, including unavailable windows.

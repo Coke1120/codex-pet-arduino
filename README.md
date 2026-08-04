@@ -21,11 +21,13 @@ This repository maintains one product configuration:
 |---|---|
 | Hardware | GUITION JC4880P443C-I-W with ESP32-P4, ESP32-C6, 480×800 ST7701S display, and GT911 touch |
 | Host | macOS with Python 3 and launchd |
-| Firmware | ESP-IDF 5.5.1 and LVGL 9 |
+| Firmware | ESP-IDF 5.5.1 (sole maintained MCU framework) with LVGL 9, the board BSP, and ESP-Hosted as ESP-IDF components |
 
 Ubuntu runners are firmware-build infrastructure only; desktop host support
 remains macOS-only. Generic Python or ESP-IDF code that happens to run elsewhere
 is an implementation detail, not a compatibility commitment.
+Arduino is unsupported and inactive; there is no maintained Arduino build,
+flash, library, or compatibility path in this repository.
 
 ## Enabled features
 
@@ -37,7 +39,7 @@ is an implementation detail, not a compatibility commitment.
 - Swipe-left Settings page for Wi-Fi and BLE controls
 - Swipe-up Codex quota page synchronized through CodexBar
 - Optional Wi-Fi station scan/connect/forget through the onboard ESP32-C6
-- Optional BLE host/controller enable/disable and `Codex Pet` advertising (BLE only; no Classic Bluetooth)
+- Optional non-connectable `Codex Pet` BLE advertising (BLE only; no Classic Bluetooth or application GATT service)
 - USB Serial lifecycle, clock, weather, quota, and legacy usage synchronization
 - Persistent macOS LaunchAgent with official Codex lifecycle hooks
 - Local-only generated pet artwork excluded from Git
@@ -150,33 +152,66 @@ the source artwork. Delete the generated file to restore the public test asset.
 
 ## 2. Build and flash the ESP32-P4
 
-Open an ESP-IDF 5.5.1 shell:
+Open an ESP-IDF 5.5.1 shell and create a clean, isolated display-safe build.
+Never flash a repo-local `esp32-p4/build/` directory or effective
+`esp32-p4/sdkconfig`; either can contain stale settings from another variant.
 
 ```bash
 cd esp32-p4
-idf.py set-target esp32p4
-idf.py build
-idf.py -p /dev/cu.<verified-p4-port> flash monitor
+P4_SAFE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-pet-p4-safe.XXXXXX")"
+idf.py -B "$P4_SAFE_ROOT/build" \
+  -D "SDKCONFIG=$P4_SAFE_ROOT/sdkconfig" \
+  -D "SDKCONFIG_DEFAULTS=$PWD/sdkconfig.defaults" \
+  set-target esp32p4
+grep -q '^CONFIG_ESP_MAIN_TASK_STACK_SIZE=7680$' "$P4_SAFE_ROOT/sdkconfig"
+grep -q '^# CONFIG_CODEX_PET_C6_WIRELESS is not set$' "$P4_SAFE_ROOT/sdkconfig"
+idf.py -B "$P4_SAFE_ROOT/build" build
+test -n "$(find "$P4_SAFE_ROOT/build" -name '*.su' -print -quit)"
+find "$P4_SAFE_ROOT/build" -name '*.su' -print
+```
+
+The build is rejected if any Codex Pet component stack frame exceeds 768 bytes;
+the emitted `.su` files are required stack-usage evidence, not optional debug
+output. Keep the isolated effective `sdkconfig`, binaries, ELF/map files, and
+`.su` reports together as one variant. Before and after flashing, independently
+read back/verify the exact bootloader, partition table, and application binaries
+described in [the hardware guide](docs/ESP32_P4.md).
+
+Only after those gates pass, flash from that same isolated build:
+
+```bash
+idf.py -B "$P4_SAFE_ROOT/build" \
+  -p /dev/cu.<verified-p4-port> flash monitor
 ```
 
 Exit the monitor with `Ctrl+]`. Expected boot output includes:
 
 ```text
 Codex Pet ESP32-P4 ready
+Display/serial: ready
 Board: JC4880P443C-I-W
 Protocol: v2 lifecycle clock weather today-v1 usage-v1 quota-v1 codexbar-v1 wireless settings-v1
+Wireless: disabled at build time
 ```
 
 ## 3. Build and flash the ESP32-C6 wireless slave
 
-Run the P4 build first so ESP-IDF resolves the exact ESP-Hosted version locked
-by the project. Then build the matching C6 image:
+Wireless P4 and matching C6 images are a separate candidate from the
+display-safe baseline. Build them in their own isolated directories only after
+the safe P4 has passed its display, Serial, stack, and read-back gates. Do not
+flash the C6 during display recovery or unless C6 work is explicitly in scope.
+The hardware guide contains the exact variant commands and acceptance gates.
+
+Run the isolated P4 build first so ESP-IDF resolves the exact ESP-Hosted version
+locked by the project. Then build the matching C6 image:
 
 ```bash
 cd esp32-p4/managed_components/espressif__esp_hosted/slave
-idf.py set-target esp32c6
-idf.py build
-idf.py -p /dev/cu.<verified-c6-port> flash monitor
+C6_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-pet-c6.XXXXXX")"
+idf.py -B "$C6_ROOT/build" -D "SDKCONFIG=$C6_ROOT/sdkconfig" set-target esp32c6
+grep -q '^CONFIG_IDF_TARGET_ESP32C6=y$' "$C6_ROOT/sdkconfig"
+idf.py -B "$C6_ROOT/build" build
+idf.py -B "$C6_ROOT/build" -p /dev/cu.<verified-c6-port> flash monitor
 ```
 
 Verify the chip identity and port before flashing. Mixing host and slave images
@@ -197,7 +232,11 @@ The installer maintains an isolated runtime under
 `~/Library/Application Support/CodexPet/runtime` and loads the
 `com.coke1120.codex-pet` per-user LaunchAgent. Configure the supplied lifecycle
 hooks separately, merging them without replacing unrelated hooks, as described
-in the desktop guide. Rerun the installer after updating the repository.
+in the desktop guide. Rerun the installer after updating the repository. Each
+update is prepared in a sibling staged venv/runtime; the live runtime, plist,
+and previously loaded jobs are restored together if unload, replacement,
+cleanup, or bootstrap fails. Unsafe broad, symlink, and non-directory runtime
+targets are rejected before filesystem mutation.
 
 When automatic port selection is ambiguous, install with the verified P4 port:
 
@@ -215,7 +254,7 @@ The manual bridge is useful for protocol and animation checks:
 ```bash
 cd mac
 python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install --require-hashes -r requirements.txt
 .venv/bin/python codex_pet_bridge.py --list
 .venv/bin/python codex_pet_bridge.py \
   --port /dev/cu.<verified-p4-port> \
@@ -246,13 +285,10 @@ PYTHONPYCACHEPREFIX=/tmp/codex-pet-pycache \
   python3 -m py_compile mac/*.py tools/*.py tests/*.py
 ```
 
-Build the P4 firmware in an ESP-IDF 5.5.1 shell:
-
-```bash
-cd esp32-p4
-idf.py set-target esp32p4
-idf.py build
-```
+Build the P4 firmware in an ESP-IDF 5.5.1 shell using the isolated display-safe
+or wireless commands above. Development verification has the same effective-
+sdkconfig, 7,680-byte main-stack, fatal 768-byte frame, and `.su` evidence gates
+as a release candidate.
 
 GitHub Actions uses macOS for supported host checks and Ubuntu only as firmware
 build infrastructure. CI compile success does not replace the physical display,
@@ -269,7 +305,9 @@ touch, P4/C6 radio, Serial, and camera-inactivity checks in
 - The legacy reader accepts only local `token_count` events for compatibility
   with older P4 firmware; those aggregates are not account quota data.
 - Wi-Fi passwords are cleared from the UI after submission and are not included
-  in UI status snapshots or logs.
+  in UI status snapshots or logs. Station credentials use ESP-IDF RAM-only
+  storage, are lost on reboot, and require the user to reconnect; they are not
+  persisted to flash by this application.
 - The camera and microphone are not initialized; the application contains no
   image capture, audio recording, media storage, or media-upload path.
 - Custom pet artwork remains local and must not be published without explicit
@@ -291,12 +329,16 @@ project's macOS-only host support policy.
 
 ## Current verification boundary
 
-The board/display path has been built, flashed, and hash-verified on an
+The board/display path has previously been built, flashed, and hash-verified on an
 ESP32-P4 revision v1.3 unit. The full v2 asset has also linked successfully.
-The new weather/clock icons and CodexBar quota UI have clean-built but still
-require post-flash physical acceptance. P4/C6 SDIO, Wi-Fi, repeated BLE
+The current hardening changes add isolated variant builds, a 7,680-byte main
+task stack floor, a fatal 768-byte frame gate, `.su` evidence, stricter Serial
+identity/exclusive ownership, RAM-only Wi-Fi credentials, and non-connectable
+BLE advertising. These current changes are software-evidenced only here; their
+exact artifacts still require read-back, boot-resource, protocol, and physical
+acceptance. P4/C6 SDIO, Wi-Fi reconnection after reboot, repeated BLE
 enable/disable and advertising, updated Serial exchange, and continuous
-display/touch stability still require the complete physical checklist in
+display/touch stability require the complete physical checklist in
 [`docs/ESP32_P4.md`](docs/ESP32_P4.md).
 
 ## Contributing and security

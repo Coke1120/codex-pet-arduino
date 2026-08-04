@@ -12,8 +12,8 @@
 
 static size_t normalise_and_tokenise(const char *line, char *buffer, char **tokens)
 {
-    size_t length = strlen(line);
-    if (length >= PET_PROTOCOL_LINE_CAPACITY) return SIZE_MAX;
+    size_t length = strnlen(line, PET_PROTOCOL_LINE_CAPACITY);
+    if (length == PET_PROTOCOL_LINE_CAPACITY) return SIZE_MAX;
 
     memcpy(buffer, line, length + 1);
     for (size_t index = 0; index < length; ++index) {

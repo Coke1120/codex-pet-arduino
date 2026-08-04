@@ -33,13 +33,17 @@ tap is only a hardware test and will be replaced by the daemon's next five-secon
 heartbeat. If a process exits without `Stop`, its last busy state can remain
 visible until the 15-minute active TTL expires.
 
-The hook stores only a hashed session key, mapped state, event name, and timestamp under:
+The hook stores only a hashed session key, mapped state, allow-listed event name,
+and timestamp under:
 
 ```text
 ~/Library/Application Support/CodexPet/sessions/
 ```
 
-It does **not** store prompts, assistant messages, tool output, transcript paths, or working-directory paths.
+It does **not** store prompts, assistant messages, tool output, transcript paths,
+working-directory paths, Wi-Fi credentials, or account identity. The session
+directory is mode `0700` and records are mode `0600`; malformed or foreign JSON
+is not accepted as lifecycle state.
 
 ## Codex quota data
 
@@ -81,7 +85,7 @@ identity fields; Codex Pet filters them before caching or sending data.
 ```bash
 cd /path/to/codex-pet-dev-board/mac
 python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install --require-hashes -r requirements.txt
 ```
 
 ## 2. Test the daemon before changing Codex
@@ -104,7 +108,14 @@ Run the persistent bridge manually:
 
 If more than one plausible Espressif device is attached, compare the macOS port
 list before and after reconnecting the P4 native USB connector, confirm the chip,
-then pass its exact `/dev/cu.*` path using `--port`.
+then pass its exact `/dev/cu.*` path using `--port`. Both automatic and explicit
+selection require current USB metadata that identifies the P4 by its exact
+`ESP32-P4` or `JC4880P443C` descriptor; C6 devices, generic Espressif VID
+`303A` `USB JTAG/serial debug unit` descriptors, and unidentified CH340 adapters
+are rejected. There is no generic-descriptor bypass: the daemon opens only the
+verified P4 port exclusively.
+Stop the LaunchAgent and every bridge/monitor first, verify `lsof "$PORT"` is
+clear, and keep exactly one serial owner for each test.
 The daemon re-sends the selected state every five seconds by default so a board
 reset cannot silently desynchronize the display. Use `--heartbeat SECONDS` to
 choose another positive interval. On a P4 that advertises `clock`, `weather`,
@@ -144,12 +155,18 @@ python3 tools/install_codex_hooks.py \
 event groups and can also be merged manually after replacing
 `/ABSOLUTE/PATH/TO/codex-pet-dev-board` with the real repository path.
 
-After installing the macOS runtime in step 4, the hook commands may instead
-point to `~/Library/Application Support/CodexPet/runtime/codex_pet_hook.py`;
-rerunning the installer keeps that copy current without granting a LaunchAgent
-access to the repository under `Documents`.
+After installing the macOS runtime in step 4, the hook commands should point to
+`~/Library/Application Support/CodexPet/runtime/codex_pet_hook.py`; rerunning the
+installer keeps that copy current without requiring Codex/background processes
+to access repository source under `Documents`. Confirm the installed hook hash
+matches the intended repository source before trusting it.
 
-Restart Codex Desktop after changing hooks. Codex requires non-managed command hooks to be reviewed and trusted before they run. Open `/hooks` in Codex, inspect the exact commands, and trust them only if the paths point to this local repository.
+Restart Codex Desktop after changing hooks. Codex requires non-managed command
+hooks to be reviewed and trusted before they run. Open `/hooks` in Codex, inspect
+the exact commands, and trust them only when they point to the verified
+Application Support runtime. Repository-source commands under `Documents` may
+work in an interactive shell yet fail in the background due to macOS privacy
+controls; do not treat interactive readability as hook-runtime proof.
 
 The hook always exits successfully and never makes allow/deny decisions, so a display or Serial failure cannot block a Codex turn.
 
@@ -166,13 +183,31 @@ cd /path/to/codex-pet-dev-board
 bash mac/install.sh
 ```
 
-Rerun the same command after pulling a new repository version. It atomically
-updates the copied daemon, hook, requirements, and plist before restarting the
-single service. When `--port` is omitted, an existing explicit port is
+Rerun the same command after pulling a new repository version. It first copies
+an existing venv (or creates a new one) into a sibling staged runtime, then
+updates the daemon, hook, usage reader, requirements, and hash-locked
+dependencies only in that stage. The live runtime remains untouched until the
+launchd unload preflight succeeds. When `--port` is omitted, an existing explicit port is
 preserved; pass `--port /dev/cu.usbmodem...` when more than one plausible board
-is attached, or `--port auto` to reset an explicit selection. The installer also
-migrates the former `org.example.codex-pet` LaunchAgent so only one daemon can
-own the Serial port. The installed LaunchAgent uses the default
+is attached, or `--port auto` to reset an explicit selection. A preserved or
+explicit path is still rejected at runtime unless its current metadata identifies
+the P4 by the exact descriptor rules above; generic Espressif USB metadata cannot
+be selected. The installer marks its plist as Codex Pet managed and recognizes
+an older unmarked plist only when its normalized Python and daemon paths exactly
+match the current runtime. It stages the replacement runtime tree off-path,
+proves every recognized competing job and the selected job are unloaded, and
+only then swaps the staged runtime and atomically installs the new plist. Before
+any unload it snapshots every affected plist and loaded state. A partial
+unload, runtime/plist replacement, cleanup, or bootstrap failure restores the
+original runtime and plist files before re-bootstrapping only the jobs that
+were previously loaded. If runtime restoration fails, no prior job is restarted;
+an incomplete rollback is reported explicitly.
+`--skip-launchctl` is therefore accepted for same-label file refreshes only;
+it refuses any label migration that would leave
+competing jobs for the next login. The installer unloads/removes default,
+legacy, and recognized custom-label competitors when necessary so only the
+selected service can own the Serial port. The installed LaunchAgent uses the
+default
 `~/.codex/sessions` root and enables usage collection when the P4 advertises it;
 `--no-usage` and `--sessions-root` are manual daemon options, not installer
 flags. The daemon connection log identifies `clock, quota, usage, weather`
@@ -193,12 +228,15 @@ Logs are written beside the runtime under
 
 With the daemon running and the JC4880P443C-I-W connected:
 
-1. Open or resume a Codex conversation: `idle`.
-2. Submit a prompt: `running`.
-3. Let Codex run tests, lint, review, or type checking: `review`.
-4. Trigger an approval request when the selected permission mode supports it: `waiting`.
-5. Let the turn finish: `idle`.
-6. On the P4 Home screen, swipe up and compare five-hour/weekly remaining,
+1. Verify exactly one process owns the explicit, USB-identified P4 port.
+2. In one direct serial session, require `pong`, `STATE ...`, and the full
+   `CAPABILITIES 2 ...` response before starting launchd.
+3. Open or resume a Codex conversation: `idle`.
+4. Submit a prompt: `running`.
+5. Let Codex run tests, lint, review, or type checking: `review`.
+6. Trigger an approval request when the selected permission mode supports it: `waiting`.
+7. Let the turn finish: `idle`.
+8. On the P4 Home screen, swipe up and compare five-hour/weekly remaining,
    reset times, and credits against CodexBar. A missing CodexBar window must
    display as unavailable rather than `100%`.
 
@@ -215,6 +253,9 @@ PYTHONPYCACHEPREFIX=/tmp/codex-pet-pycache \
 - Codex exposes lifecycle events, not a stable public API for the decorative on-screen pet's exact animation frame. This integration reflects agent activity states rather than scraping UI pixels.
 - `PermissionRequest` appears only when Codex actually asks for approval. A configuration such as `approval_policy = "never"` will not emit that event.
 - Hook definitions are security-sensitive executable configuration. Review and trust are intentionally user-controlled in Codex; do not bypass that trust flow for normal desktop use.
+- Wi-Fi settings are managed on the optional P4/C6 wireless candidate, not by
+  this host runtime. Credentials are RAM-only on the P4, disappear on reboot,
+  and require an explicit reconnect; the host never receives or persists them.
 - CodexBar does not yet expose a supported command for reading the menu-bar
   app's persisted cache, so the daemon invokes the same official provider stack
   through its OAuth JSON CLI. If that command fails, the last numeric snapshot

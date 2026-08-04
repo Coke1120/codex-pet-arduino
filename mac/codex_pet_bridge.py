@@ -26,6 +26,19 @@ except ImportError as exc:
     ) from exc
 
 VALID_STATES = ("idle", "running", "waiting", "review")
+MAX_BAUD = 4_000_000
+
+
+def valid_baud(raw: str) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise argparse.ArgumentTypeError("expected an integer baud rate") from exc
+    if not 1 <= value <= MAX_BAUD:
+        raise argparse.ArgumentTypeError(
+            "expected a baud rate between 1 and {}".format(MAX_BAUD)
+        )
+    return value
 
 
 def port_description(port: ListPortInfo) -> str:
@@ -56,21 +69,22 @@ def board_score(port: ListPortInfo) -> int:
         return 0
     if "esp32-p4" in text or "esp32p4" in text or "jc4880p443c" in text:
         return 150
-    is_espressif = port.vid == 0x303A or "espressif" in text
-    if (
-        is_espressif
-        and port.device.startswith("/dev/cu.usbmodem")
-        and "usb jtag/serial debug unit" in text
-    ):
-        return 10
     return 0
 
 
 def choose_port(requested: str) -> str:
+    ports = detected_ports()
     if requested != "auto":
+        matches = [port for port in ports if port.device == requested]
+        if len(matches) != 1 or board_score(matches[0]) <= 0:
+            raise SystemExit(
+                "The requested port is not an identifiable Codex Pet P4. "
+                "Exact ESP32-P4/JC4880P443C metadata is required; generic "
+                "Espressif USB JTAG/serial descriptors are rejected. Inspect "
+                "the port list and pass the verified /dev/cu.* device."
+            )
         return requested
 
-    ports = detected_ports()
     scored = [(board_score(port), port) for port in ports]
     plausible = [(score, port) for score, port in scored if score > 0]
     if not plausible:
@@ -137,8 +151,15 @@ def stdin_states() -> Iterable[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Send Codex Pet states to the board.")
-    parser.add_argument("--port", default="auto", help="serial port or 'auto'")
-    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument(
+        "--port",
+        default="auto",
+        help=(
+            "verified P4 /dev/cu.* path or 'auto'; exact ESP32-P4/JC4880P443C "
+            "metadata is required"
+        ),
+    )
+    parser.add_argument("--baud", type=valid_baud, default=115200)
     parser.add_argument("--list", action="store_true", help="list serial ports and exit")
     parser.add_argument("--state", choices=VALID_STATES, help="send one state and exit")
     parser.add_argument("--interactive", action="store_true", help="prompt for states")
@@ -159,7 +180,13 @@ def main() -> int:
 
     # Opening the USB serial port resets the ESP32-P4; allow it to boot.
     try:
-        board = serial.Serial(port, args.baud, timeout=0.08, write_timeout=1.0)
+        board = serial.Serial(
+            port,
+            args.baud,
+            timeout=0.08,
+            write_timeout=1.0,
+            exclusive=True,
+        )
     except (OSError, serial.SerialException) as exc:
         print("Serial error:", exc, file=sys.stderr)
         return 1

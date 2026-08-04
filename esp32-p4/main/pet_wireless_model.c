@@ -26,6 +26,11 @@ bool pet_wireless_credentials_valid(const char *ssid, const char *password)
     return password_length == 0U || (password_length >= 8U && password_length <= 63U);
 }
 
+bool pet_wireless_deadline_expired(int64_t now_us, int64_t deadline_us)
+{
+    return deadline_us > 0 && now_us >= deadline_us;
+}
+
 void pet_wireless_scan_reset(pet_wireless_snapshot_t *snapshot)
 {
     if (snapshot == NULL) {
@@ -38,7 +43,14 @@ void pet_wireless_scan_reset(pet_wireless_snapshot_t *snapshot)
 void pet_wireless_scan_add(pet_wireless_snapshot_t *snapshot,
                            const pet_wireless_access_point_t *access_point)
 {
-    if (snapshot == NULL || access_point == NULL || access_point->ssid[0] == '\0') {
+    if (snapshot == NULL || access_point == NULL) {
+        return;
+    }
+
+    const size_t access_point_ssid_length =
+        bounded_length(access_point->ssid, PET_WIRELESS_MAX_SSID_LEN);
+    if (access_point_ssid_length == 0U ||
+        access_point_ssid_length > PET_WIRELESS_MAX_SSID_LEN) {
         return;
     }
 
@@ -48,7 +60,13 @@ void pet_wireless_scan_add(pet_wireless_snapshot_t *snapshot,
     }
 
     for (size_t index = 0; index < count; ++index) {
-        if (strcmp(snapshot->scan_results[index].ssid, access_point->ssid) == 0) {
+        const size_t existing_ssid_length =
+            bounded_length(snapshot->scan_results[index].ssid, PET_WIRELESS_MAX_SSID_LEN);
+        const bool same_ssid = existing_ssid_length == access_point_ssid_length &&
+                               memcmp(snapshot->scan_results[index].ssid,
+                                      access_point->ssid,
+                                      access_point_ssid_length) == 0;
+        if (same_ssid) {
             if (access_point->rssi <= snapshot->scan_results[index].rssi) {
                 return;
             }

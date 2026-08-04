@@ -15,5 +15,10 @@ idf_component_register(
              lvgl esp32_p4_jc4880p433c_bsp
 )
 
+target_compile_options(${COMPONENT_LIB} PRIVATE
+    -fstack-usage
+    -Werror=frame-larger-than=768
+)
+
 # Defer ESP-Hosted initialization until app_main has brought up the display.
 idf_component_set_property(espressif__esp_hosted WHOLE_ARCHIVE FALSE)

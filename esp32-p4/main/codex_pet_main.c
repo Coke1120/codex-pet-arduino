@@ -13,6 +13,7 @@
 
 #include "bsp/esp-bsp.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -23,6 +24,7 @@
 #include "pet_interaction.h"
 #include "pet_protocol.h"
 #include "pet_wireless.h"
+#include "sdkconfig.h"
 
 #define DISPLAY_WIDTH 480
 #define DISPLAY_HEIGHT 800
@@ -37,6 +39,11 @@
 #define TOP_WEATHER_ICON_SIZE 28
 #define TODAY_WEATHER_ICON_SIZE 52
 #define TODAY_CLOCK_ICON_SIZE 30
+#define CODEX_PET_MAIN_TASK_STACK_MIN_BYTES 7680
+
+#if CONFIG_ESP_MAIN_TASK_STACK_SIZE < CODEX_PET_MAIN_TASK_STACK_MIN_BYTES
+#error "CONFIG_ESP_MAIN_TASK_STACK_SIZE must be at least 7680 bytes"
+#endif
 
 static const char *TAG = "codex_pet";
 
@@ -1902,29 +1909,53 @@ static void serial_task(void *argument)
     }
 }
 
+static void log_main_init_stack_high_water(const char *stage)
+{
+    const size_t high_water_bytes =
+        (size_t)uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t);
+    const size_t internal_heap_bytes = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG,
+             "Main init resources after %s: %zu stack bytes free, %zu internal heap bytes free",
+             stage, high_water_bytes, internal_heap_bytes);
+}
+
+static void log_main_init_failure(const char *stage)
+{
+    ESP_LOGE(TAG, "Initialization failed at stage: %s", stage);
+    log_main_init_stack_high_water(stage);
+}
+
 void app_main(void)
 {
     setvbuf(stdin, NULL, _IONBF, 0);
     setvbuf(stdout, NULL, _IONBF, 0);
+    log_main_init_stack_high_water("entry");
 
     lv_display_t *display = bsp_display_start();
     if (display == NULL) {
-        ESP_LOGE(TAG, "Display initialization failed");
+        log_main_init_failure("display initialization");
         return;
     }
-    ESP_ERROR_CHECK(bsp_display_brightness_set(80));
+
+    esp_err_t brightness_result = bsp_display_brightness_set(80);
+    if (brightness_result != ESP_OK) {
+        ESP_LOGE(TAG, "Display brightness failed: %s (0x%x)",
+                 esp_err_to_name(brightness_result), (unsigned int)brightness_result);
+        log_main_init_failure("display brightness");
+        return;
+    }
+    log_main_init_stack_high_water("display/BSP");
 
     if (!bsp_display_lock(0)) {
-        ESP_LOGE(TAG, "Could not lock LVGL");
+        log_main_init_failure("LVGL lock");
         return;
     }
     create_ui();
     bsp_display_unlock();
+    log_main_init_stack_high_water("UI");
 
-    pet_wireless_result_t wireless_result = PET_WIRELESS_BACKEND_FAILURE;
 #ifdef CONFIG_CODEX_PET_C6_WIRELESS
-    wireless_result = pet_wireless_start();
-#endif
+    const pet_wireless_result_t wireless_result = pet_wireless_start();
     if (wireless_result != PET_WIRELESS_OK) {
         ESP_LOGW(TAG, "Wireless backend did not start (%d)", wireless_result);
         if (bsp_display_lock(1000)) {
@@ -1933,12 +1964,30 @@ void app_main(void)
             bsp_display_unlock();
         }
     }
+#else
+    ESP_LOGI(TAG, "Optional wireless backend disabled at build time");
+#endif
+    log_main_init_stack_high_water("wireless");
+
+    BaseType_t created = xTaskCreate(serial_task, "codex_pet_serial", 4096, NULL, 5, NULL);
+    if (created != pdPASS) {
+        log_main_init_failure("serial task creation");
+        return;
+    }
 
     printf("Codex Pet ESP32-P4 ready\n");
+    printf("Display/serial: ready\n");
     printf("Board: JC4880P443C-I-W\n");
     printf("Protocol: v2 lifecycle clock weather today-v1 usage-v1 quota-v1 codexbar-v1 wireless settings-v1\n");
     printf("Commands: idle running waiting review ping status capabilities clock weather usage quota\n");
-
-    BaseType_t created = xTaskCreate(serial_task, "codex_pet_serial", 4096, NULL, 5, NULL);
-    if (created != pdPASS) ESP_LOGE(TAG, "Could not start Serial task");
+#ifdef CONFIG_CODEX_PET_C6_WIRELESS
+    if (wireless_result == PET_WIRELESS_OK) {
+        printf("Wireless: startup requested; readiness pending\n");
+    } else {
+        printf("Wireless: unavailable (startup result %d)\n", wireless_result);
+    }
+#else
+    printf("Wireless: disabled at build time\n");
+#endif
+    log_main_init_stack_high_water("final");
 }

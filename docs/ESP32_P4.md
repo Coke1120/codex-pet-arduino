@@ -31,7 +31,8 @@ application GATT service.
 
 ## Software stack
 
-- ESP-IDF **5.5.1**
+- ESP-IDF **5.5.1** is the sole maintained MCU framework. Arduino is unsupported
+  and inactive; there is no maintained Arduino build or compatibility path.
 - LVGL 9.5.0 through `espressif/esp_lvgl_port` 2.8.0~1
 - pinned community display/touch BSP commit `932af3aaee532af144087b6126aaa48eb9124be4`
   (the upstream repository name says P433C, while its internal board symbols say
@@ -45,6 +46,9 @@ application GATT service.
 - 16 MB flash and HEX PSRAM at 80 MHz, matching the verified build configuration
 - Native USB Serial/JTAG protocol transport; the host bridge keeps its 115200
   compatibility setting, although USB transport itself is not baud-clocked
+
+LVGL, the board BSP, `esp_wifi_remote`, and ESP-Hosted are ESP-IDF components,
+not alternative firmware frameworks.
 
 ## Vendor BSP snapshot
 
@@ -102,13 +106,49 @@ adds semantic aliases such as `blink`, `look_up`, `present`, `think`, `happy`,
 ## Build
 
 Install ESP-IDF 5.5.1 according to Espressif's setup guide, then open a shell in
-which `idf.py` is available:
+which `idf.py` is available. Do not reuse or flash repo-local `build/` output or
+the repo-local effective `sdkconfig`: either can retain a different variant's
+configuration. Every build starts from a clean isolated build directory and a
+new isolated effective sdkconfig.
+
+Display-safe P4 baseline:
 
 ```bash
 cd esp32-p4
-idf.py set-target esp32p4
-idf.py build
+P4_SAFE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-pet-p4-safe.XXXXXX")"
+idf.py -B "$P4_SAFE_ROOT/build" \
+  -D "SDKCONFIG=$P4_SAFE_ROOT/sdkconfig" \
+  -D "SDKCONFIG_DEFAULTS=$PWD/sdkconfig.defaults" \
+  set-target esp32p4
+grep -q '^CONFIG_ESP_MAIN_TASK_STACK_SIZE=7680$' "$P4_SAFE_ROOT/sdkconfig"
+grep -q '^# CONFIG_CODEX_PET_C6_WIRELESS is not set$' "$P4_SAFE_ROOT/sdkconfig"
+idf.py -B "$P4_SAFE_ROOT/build" build
+test -n "$(find "$P4_SAFE_ROOT/build" -name '*.su' -print -quit)"
+find "$P4_SAFE_ROOT/build" -name '*.su' -print
 ```
+
+Wireless-enabled P4 candidate, kept separate from the safe baseline:
+
+```bash
+cd esp32-p4
+P4_WIRELESS_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-pet-p4-wireless.XXXXXX")"
+idf.py -B "$P4_WIRELESS_ROOT/build" \
+  -D "SDKCONFIG=$P4_WIRELESS_ROOT/sdkconfig" \
+  -D "SDKCONFIG_DEFAULTS=$PWD/sdkconfig.defaults;$PWD/sdkconfig.ci-wireless" \
+  set-target esp32p4
+grep -q '^CONFIG_ESP_MAIN_TASK_STACK_SIZE=7680$' "$P4_WIRELESS_ROOT/sdkconfig"
+grep -q '^CONFIG_CODEX_PET_C6_WIRELESS=y$' "$P4_WIRELESS_ROOT/sdkconfig"
+idf.py -B "$P4_WIRELESS_ROOT/build" build
+test -n "$(find "$P4_WIRELESS_ROOT/build" -name '*.su' -print -quit)"
+find "$P4_WIRELESS_ROOT/build" -name '*.su' -print
+```
+
+Both P4 variants require `CONFIG_ESP_MAIN_TASK_STACK_SIZE=7680`. Firmware also
+enforces 7,680 bytes as a compile-time floor. The Codex Pet component is compiled
+with `-Werror=frame-larger-than=768`, so a frame above 768 bytes is fatal, and
+with `-fstack-usage`, so a successful build must produce `.su` evidence. Treat
+missing `.su` reports as a failed verification. Retain the effective sdkconfig,
+binaries, ELF/map files, and `.su` reports with the exact variant they describe.
 
 The first build downloads the pinned BSP and its managed dependencies. Review
 [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) before redistributing a
@@ -138,37 +178,71 @@ ESP32-P4 protocol/flash port from the ESP32-C6 flash port. Confirm the reported
 chip before writing either image; do not infer the target from a changing
 `usbmodem` suffix.
 
+Automatic host selection accepts only one identifiable P4 candidate and rejects
+explicit paths whose current USB metadata does not identify a supported P4. C6
+metadata is excluded. Stop launchd, bridges, monitors, and every other owner;
+then use `lsof "$PORT"` and keep one exclusive serial owner for the complete
+boot/protocol session.
+
 ## Flash and monitor
 
 Put the P4 into download mode if the board is not already detected by the
-flasher, then run:
+flasher. Flash only the exact isolated variant whose effective sdkconfig and
+artifacts were just checked. For the display-safe example above:
 
 ```bash
 cd esp32-p4
-idf.py -p /dev/cu.<verified-p4-port> flash monitor
+idf.py -B "$P4_SAFE_ROOT/build" \
+  -p /dev/cu.<verified-p4-port> flash monitor
 ```
 
 Exit the ESP-IDF monitor with `Ctrl+]`.
+
+Writing is not verification. Before flashing, record hashes for the isolated
+bootloader, partition table, and application. After flashing, independently
+read back or run `verify_flash` for each region against those same exact files:
+bootloader at `0x2000`, partition table at `0x8000`, and application at
+`0x10000`. A write-side hash, successful `idf.py flash`, or a different
+variant's binaries cannot satisfy this gate.
 
 Expected boot lines include:
 
 ```text
 Codex Pet ESP32-P4 ready
+Display/serial: ready
 Board: JC4880P443C-I-W
 Protocol: v2 lifecycle clock weather today-v1 usage-v1 quota-v1 codexbar-v1 wireless settings-v1
 Commands: idle running waiting review ping status capabilities clock weather usage quota
+Wireless: disabled at build time
 ```
+
+The current firmware also logs main-task stack high-water and free internal heap
+in bytes after `entry`, `display/BSP`, `UI`, `wireless`, and `final`. Capture the
+complete values in this form:
+
+```text
+Main init resources after <stage>: <N> stack bytes free, <N> internal heap bytes free
+```
+
+For a wireless candidate, `Wireless: startup requested; readiness pending` is
+not a readiness claim; correlate the wireless-stage result with the unchanged
+display, Serial, stack, and heap evidence.
 
 ## Build and flash the ESP32-C6 slave
 
-Run the P4 build first so ESP-IDF materializes the exact ESP-Hosted version from
-`dependencies.lock`. Then build the slave project inside that managed component:
+The C6 is a separate candidate and remains untouched during display-safe
+recovery. Build or flash it only when wireless/C6 work is explicitly in scope.
+Run the isolated wireless P4 build first so ESP-IDF materializes the exact
+ESP-Hosted version from `dependencies.lock`. Then build the slave project inside
+that managed component into another isolated directory:
 
 ```bash
 cd esp32-p4/managed_components/espressif__esp_hosted/slave
-idf.py set-target esp32c6
-idf.py build
-idf.py -p /dev/cu.<verified-c6-port> flash monitor
+C6_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-pet-c6.XXXXXX")"
+idf.py -B "$C6_ROOT/build" -D "SDKCONFIG=$C6_ROOT/sdkconfig" set-target esp32c6
+grep -q '^CONFIG_IDF_TARGET_ESP32C6=y$' "$C6_ROOT/sdkconfig"
+idf.py -B "$C6_ROOT/build" build
+idf.py -B "$C6_ROOT/build" -p /dev/cu.<verified-c6-port> flash monitor
 ```
 
 This source tree is ESP-Hosted 2.12.12, the same release linked into the P4 host
@@ -259,12 +333,13 @@ unavailable. `--no-usage` disables both quota sync and legacy local usage sync.
 - When compiled in, Settings starts the non-blocking C6 backend and exposes Wi-Fi enable, scan,
   network selection, password entry for secured networks, forget, and a BLE
   Enable/Disable control. BLE starts disabled. Enable initializes the P4 NimBLE
-  host and C6 controller before advertising as `Codex Pet`; Disable stops
-  advertising, stops and deinitializes the host, then disables and deinitializes
+  host and C6 controller before advertising `Codex Pet` in non-connectable mode;
+  Disable stops advertising, stops and deinitializes the host, then disables and deinitializes
   the C6 controller while retaining memory for a later Enable. Password text is
   cleared after submission and is never included in the UI status snapshot or
-  logs. ESP-IDF stores the selected station configuration in flash until Forget
-  clears it. If host startup does not synchronize within the bounded startup
+  logs. ESP-IDF storage is RAM-only (`WIFI_STORAGE_RAM`): the station credentials
+  are lost on reboot and the user must select the network and reconnect. Forget clears the active
+  in-memory configuration. If host startup does not synchronize within the bounded startup
   window, Settings exposes Disable so partially initialized BLE layers can be
   torn down; a failed shutdown exposes Retry. BLE lifecycle work runs separately
   from the Wi-Fi command manager so a delayed stop does not stall Wi-Fi controls.
@@ -302,25 +377,29 @@ After flashing, verify all of the following on the real board:
 7. A left swipe opens Settings; a right swipe or Back returns Home without
    changing the current lifecycle animation.
 8. Enable Wi-Fi, scan, connect to an open or WPA/WPA2 network, and confirm the
-   Settings status and RSSI update. Use Forget and verify the saved network is
-   cleared. Do not publish the SSID or password in test logs.
+   Settings status and RSSI update. Reboot and verify credentials were not
+   persisted and reconnection is required. Use Forget and verify the active
+   network is cleared. Do not publish the SSID or password in test logs.
 9. Enable BLE, use a second device to discover `Codex Pet`, then Disable it and
    confirm it disappears. Enable it again and confirm it reappears. Repeat the
-   cycle while Wi-Fi is connected and verify Wi-Fi remains connected. This is
-   BLE discovery only; Classic Bluetooth is not supported.
+   cycle while Wi-Fi is connected and verify Wi-Fi remains connected. Confirm a
+   scanner reports non-connectable advertising. This is BLE discovery only;
+   Classic Bluetooth and an application GATT connection are not supported.
 10. An upward swipe opens Codex Quota and shows the same remaining percentages,
     reset times, and credits reported by CodexBar. A downward swipe or Back
     returns Home. Leave the daemon stopped long enough to observe aging at five
     minutes and stale at 30 minutes.
 11. The Today panel shows a clock icon next to its time and a condition icon;
     Home shows the same condition icon beside the weather label.
-12. `capabilities`, all four lifecycle commands, `clock`, `weather`, `quota`,
+12. The normal boot log includes all five main-init stack-high-water/internal-
+    heap checkpoints without an initialization-failure stage.
+13. `capabilities`, all four lifecycle commands, `clock`, `weather`, `quota`,
     and legacy `usage` return the exact acknowledgements above.
-13. Time continues advancing between minute syncs; a failed weather or CodexBar
+14. Time continues advancing between minute syncs; a failed weather or CodexBar
     refresh does not block lifecycle or clock updates.
-14. The backlight and scaled animation remain stable while Wi-Fi scans, BLE
+15. The backlight and scaled animation remain stable while Wi-Fi scans, BLE
     advertises continuously, and BLE is repeatedly disabled and enabled.
-15. Confirm no camera indicator or stream activates; the application contains no
+16. Confirm no camera indicator or stream activates; the application contains no
    camera initialization, but this remains a physical acceptance check.
 
 If the panel stays dark, stop and check that the exact PCB model is
@@ -341,10 +420,14 @@ selection is ambiguous. The maintained host environment is macOS.
 
 The board/display route was previously clean-built and flashed to an ESP32-P4
 revision v1.3 unit, and its written image hashes were verified. The full v2
-animation asset has also been linked locally. The Settings and Codex Quota
-surfaces, P4/C6 SDIO link, Wi-Fi connection, repeated BLE controller teardown and
-restart, BLE advertising, CodexBar quota rendering, weather/clock icons, updated
-Serial exchange, and concurrent display/touch stability still require the
-physical checks above. If the stock ST7701 route
+animation asset has also been linked locally. The current stack/resource,
+variant-isolation, Serial identity, RAM-only credential, and non-connectable BLE
+hardening is supported by source and automated tests, not new hardware evidence.
+Its exact safe and wireless artifacts still require `.su`, read-back, normal-
+boot resource, protocol, and physical checks. The Settings and Codex Quota
+surfaces, P4/C6 SDIO link, Wi-Fi connection/reconnection, repeated BLE controller
+teardown and restart, BLE advertising, CodexBar quota rendering, weather/clock
+icons, updated Serial exchange, and concurrent display/touch stability still
+require the physical checks above. If the stock ST7701 route
 becomes unreliable, migrate to the hardware-tested manual DPI bring-up rather
 than changing timings at random.

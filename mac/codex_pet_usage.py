@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -17,6 +18,7 @@ from typing import Any, Callable, Iterable, Optional, Tuple
 MAX_INT64 = (1 << 63) - 1
 MAX_UNIX_EPOCH = 253_402_250_399
 MIN_REFRESH_INTERVAL = 60.0
+DEFAULT_SESSION_RESCAN_INTERVAL = 15 * MIN_REFRESH_INTERVAL
 UNKNOWN_QUOTA = -1
 CODEXBAR_CLI_CANDIDATES = (
     Path("/opt/homebrew/bin/codexbar"),
@@ -300,11 +302,123 @@ def _usage_values(record: Any) -> Optional[Tuple[datetime, int, int, int, int]]:
     return timestamp, total, last_total, cached, input_tokens
 
 
+class SessionPathIndex:
+    """Bounded in-memory index of recently active Codex session files.
+
+    The legacy session layout stores long-running sessions below the day on
+    which they were created.  A full recursive scan is needed once to find
+    those files, but repeating it for every minute refresh is unnecessarily
+    expensive.  This index retains the complete path inventory and rescans
+    the tree only at a bounded interval.
+    """
+
+    def __init__(self, rescan_interval: float = DEFAULT_SESSION_RESCAN_INTERVAL):
+        try:
+            interval = float(rescan_interval)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("rescan_interval must be a positive number") from exc
+        if interval <= 0 or not abs(interval) < float("inf"):
+            raise ValueError("rescan_interval must be a positive finite number")
+        self.rescan_interval = interval
+        self._paths_by_root: dict[Path, set[Path]] = {}
+        self._last_rescan_by_root: dict[Path, float] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _day_directory(sessions_root: Path, day: datetime) -> Path:
+        return (
+            sessions_root
+            / day.strftime("%Y")
+            / day.strftime("%m")
+            / day.strftime("%d")
+        )
+
+    def discover(
+        self,
+        sessions_root: Path,
+        days: Iterable[datetime],
+        modified_since: Optional[float],
+        now_epoch: float,
+    ) -> Tuple[Path, ...]:
+        """Return active paths while incrementally updating the index."""
+        root = Path(sessions_root)
+        selected: list[Path] = []
+        selected_set: set[Path] = set()
+
+        with self._lock:
+            paths = self._paths_by_root.setdefault(root, set())
+
+            day_directories: set[Path] = set()
+            for day in days:
+                directory = self._day_directory(root, day)
+                if directory in day_directories or not directory.exists():
+                    continue
+                day_directories.add(directory)
+                try:
+                    discovered = tuple(directory.glob("*.jsonl"))
+                except OSError as exc:
+                    raise OSError("could not scan Codex sessions") from exc
+                for path in discovered:
+                    paths.add(path)
+                    if path not in selected_set:
+                        selected.append(path)
+                        selected_set.add(path)
+
+            last_rescan = self._last_rescan_by_root.get(root)
+            should_rescan = (
+                last_rescan is None
+                or now_epoch < last_rescan
+                or now_epoch - last_rescan >= self.rescan_interval
+            )
+            if should_rescan:
+                if root.exists():
+                    try:
+                        for path in root.rglob("*.jsonl"):
+                            paths.add(path)
+                    except OSError as exc:
+                        raise OSError("could not scan Codex sessions") from exc
+                self._last_rescan_by_root[root] = now_epoch
+
+            # Drop only disappeared paths.  Retained dormant paths are still
+            # stat'ed on every refresh so a later touch/appended event becomes
+            # active immediately without waiting for the next bounded rglob.
+            # Files in the current and previous day directories were already
+            # selected above and remain covered even when their mtime is old.
+            for path in tuple(paths):
+                if path in selected_set:
+                    continue
+                try:
+                    modified = path.stat().st_mtime
+                except FileNotFoundError:
+                    paths.discard(path)
+                    continue
+                except OSError as exc:
+                    raise OSError("could not inspect Codex sessions") from exc
+                if modified_since is not None and modified < modified_since:
+                    continue
+                selected.append(path)
+                selected_set.add(path)
+
+        return tuple(selected)
+
+
 def _session_files(
     sessions_root: Path,
     days: Iterable[datetime],
     modified_since: Optional[float] = None,
+    session_index: Optional[SessionPathIndex] = None,
+    now_epoch: Optional[float] = None,
 ) -> Iterable[Path]:
+    if session_index is not None:
+        for path in session_index.discover(
+            Path(sessions_root),
+            days,
+            modified_since,
+            time.time() if now_epoch is None else now_epoch,
+        ):
+            yield path
+        return
+
     seen = set()
     for day in days:
         directory = (
@@ -340,7 +454,10 @@ def _session_files(
 
 
 def collect_usage(
-    sessions_root: Path, now: Optional[datetime] = None
+    sessions_root: Path,
+    now: Optional[datetime] = None,
+    *,
+    session_index: Optional[SessionPathIndex] = None,
 ) -> UsageSnapshot:
     """Read token_count aggregates only; no transcript fields leave this function."""
     local_now = datetime.now().astimezone() if now is None else now
@@ -355,7 +472,19 @@ def collect_usage(
 
     scan_days = (local_now, local_now - timedelta(days=1))
     recently_modified = (local_now - timedelta(days=2)).timestamp()
-    for path in _session_files(Path(sessions_root), scan_days, recently_modified):
+    if session_index is None:
+        session_files = _session_files(
+            Path(sessions_root), scan_days, recently_modified
+        )
+    else:
+        session_files = _session_files(
+            Path(sessions_root),
+            scan_days,
+            recently_modified,
+            session_index=session_index,
+            now_epoch=local_now.timestamp(),
+        )
+    for path in session_files:
         try:
             with path.open("r", encoding="utf-8") as stream:
                 for line in stream:
@@ -387,6 +516,10 @@ def collect_usage(
                         today_tokens += last_total
                         today_cached += cached
                         today_input += input_tokens
+        except FileNotFoundError:
+            # A session may be rotated or removed between discovery and read.
+            # It should not invalidate the aggregate refresh.
+            continue
         except (OSError, UnicodeError) as exc:
             raise OSError("could not read Codex usage aggregates") from exc
 
@@ -414,16 +547,36 @@ def _load_cache(path: Optional[Path]) -> Optional[UsageSnapshot]:
 def _save_cache(path: Optional[Path], snapshot: Any) -> None:
     if path is None:
         return
-    temporary = path.with_name(path.name + ".tmp")
+    temporary: Optional[Path] = None
+    fd: Optional[int] = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary.write_text(json.dumps(asdict(snapshot)), encoding="utf-8")
-        temporary.replace(path)
+        path.parent.chmod(0o700)
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=path.name + ".tmp.", dir=str(path.parent)
+        )
+        temporary = Path(temporary_name)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = None
+            json.dump(asdict(snapshot), handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        path.chmod(0o600)
     except OSError:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
 
 
 class UsageWorker:
@@ -434,16 +587,21 @@ class UsageWorker:
         sessions_root: Path,
         cache_path: Optional[Path] = None,
         refresh_interval: float = MIN_REFRESH_INTERVAL,
-        collector: Callable[[Path, Optional[datetime]], UsageSnapshot] = collect_usage,
+        collector: Optional[
+            Callable[[Path, Optional[datetime]], UsageSnapshot]
+        ] = None,
         wall_clock: Callable[[], float] = time.time,
         monotonic_clock: Callable[[], float] = time.monotonic,
+        session_index: Optional[SessionPathIndex] = None,
     ) -> None:
         self.sessions_root = Path(sessions_root)
         self.cache_path = cache_path
         self.refresh_interval = max(MIN_REFRESH_INTERVAL, refresh_interval)
-        self.collector = collector
+        self.collector = collect_usage if collector is None else collector
+        self._use_session_index = collector is None or self.collector is collect_usage
         self.wall_clock = wall_clock
         self.monotonic_clock = monotonic_clock
+        self._session_index = session_index or SessionPathIndex()
         self._snapshot = _load_cache(cache_path)
         self._last_error: Optional[str] = None
         self._next_refresh_at = 0.0
@@ -461,8 +619,15 @@ class UsageWorker:
     def _refresh(self) -> None:
         try:
             instant = datetime.fromtimestamp(self.wall_clock()).astimezone()
-            snapshot = self.collector(self.sessions_root, instant).validated()
-        except (OSError, TypeError, ValueError, OverflowError) as exc:
+            if self._use_session_index:
+                snapshot = self.collector(
+                    self.sessions_root,
+                    instant,
+                    session_index=self._session_index,
+                ).validated()
+            else:
+                snapshot = self.collector(self.sessions_root, instant).validated()
+        except (OSError, TypeError, ValueError, OverflowError, InvalidOperation) as exc:
             with self._lock:
                 self._last_error = "{}: {}".format(type(exc).__name__, exc)
             return
@@ -537,7 +702,7 @@ class CodexBarQuotaWorker:
     def _refresh(self) -> None:
         try:
             snapshot = self.collector().validated()
-        except (OSError, TypeError, ValueError, OverflowError) as exc:
+        except (OSError, TypeError, ValueError, OverflowError, InvalidOperation) as exc:
             with self._lock:
                 self._last_error = "{}: {}".format(type(exc).__name__, exc)
             return

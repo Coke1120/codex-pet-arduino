@@ -2,11 +2,14 @@
 """Persistent macOS Codex lifecycle and ESP32-P4 Serial bridge."""
 
 import argparse
+import http.client
 import json
 import math
 import os
+import re
 import signal
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -56,12 +59,27 @@ WEATHER_CONDITIONS = frozenset(
 )
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 MAX_UNIX_EPOCH = 253_402_250_399
+MAX_BAUD = 4_000_000
+HOOK_RECORD_NAME = re.compile(r"^[0-9a-f]{24}\.json$")
+HOOK_RECORD_KEYS = frozenset(("version", "state", "event", "updated_at"))
 
 
 def positive_float(raw: str) -> float:
     value = float(raw)
     if not math.isfinite(value) or value <= 0:
         raise argparse.ArgumentTypeError("expected a positive finite number")
+    return value
+
+
+def valid_baud(raw: str) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise argparse.ArgumentTypeError("expected an integer baud rate") from exc
+    if not 1 <= value <= MAX_BAUD:
+        raise argparse.ArgumentTypeError(
+            "expected a baud rate between 1 and {}".format(MAX_BAUD)
+        )
     return value
 
 
@@ -239,16 +257,36 @@ def _load_weather_cache(path: Path) -> Optional[WeatherSnapshot]:
 
 
 def _save_weather_cache(path: Path, snapshot: WeatherSnapshot) -> None:
-    temporary = path.with_name(path.name + ".tmp")
+    temporary: Optional[Path] = None
+    fd: Optional[int] = None
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary.write_text(json.dumps(asdict(snapshot)), encoding="utf-8")
-        temporary.replace(path)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(path.parent, 0o700)
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=".{}-".format(path.name), suffix=".tmp", dir=str(path.parent)
+        )
+        temporary = Path(temporary_name)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = None
+            json.dump(asdict(snapshot), handle, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
     except OSError:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
 
 
 class WeatherWorker:
@@ -298,7 +336,12 @@ class WeatherWorker:
         while not self._stop.is_set():
             try:
                 snapshot = self.fetcher(self.timeout)
-            except (OSError, ValueError, json.JSONDecodeError) as exc:
+            except (
+                OSError,
+                ValueError,
+                json.JSONDecodeError,
+                http.client.HTTPException,
+            ) as exc:
                 message = "{}: {}".format(type(exc).__name__, exc)
                 with self._lock:
                     self._last_error = message
@@ -343,20 +386,17 @@ def board_score(port: ListPortInfo) -> int:
         return 0
     if "esp32-p4" in text or "esp32p4" in text or "jc4880p443c" in text:
         return 150
-    is_espressif = port.vid == 0x303A or "espressif" in text
-    if (
-        is_espressif
-        and port.device.startswith("/dev/cu.usbmodem")
-        and "usb jtag/serial debug unit" in text
-    ):
-        return 10
     return 0
 
 
 def choose_port(requested: str) -> Optional[str]:
+    ports = detected_ports()
     if requested != "auto":
-        return requested if Path(requested).exists() else None
-    scored = [(board_score(port), port) for port in detected_ports()]
+        matches = [port for port in ports if port.device == requested]
+        if len(matches) != 1 or board_score(matches[0]) <= 0:
+            return None
+        return requested
+    scored = [(board_score(port), port) for port in ports]
     candidates = [(score, port) for score, port in scored if score > 0]
     if not candidates:
         return None
@@ -394,17 +434,25 @@ def read_active_states(
     if not state_dir.exists():
         return active
     for path in state_dir.glob("*.json"):
+        if HOOK_RECORD_NAME.fullmatch(path.name) is None:
+            continue
         identity = _file_identity(path)
         if identity is None:
             continue
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(record, dict)
+                or set(record) != HOOK_RECORD_KEYS
+                or record.get("version") != 1
+                or not isinstance(record.get("event"), str)
+            ):
+                continue
             state = record["state"]
             updated_at = float(record["updated_at"])
         except OSError:
             continue
         except (ValueError, TypeError, KeyError):
-            _prune_if_unchanged(path, identity)
             continue
         if state not in VALID_STATES or not math.isfinite(updated_at):
             _prune_if_unchanged(path, identity)
@@ -442,7 +490,13 @@ class P4Link:
     ) -> None:
         self.port = port
         self.capabilities: Set[str] = set()
-        self.board = serial.Serial(port, baud, timeout=0.25, write_timeout=1.0)
+        self.board = serial.Serial(
+            port,
+            baud,
+            timeout=0.25,
+            write_timeout=1.0,
+            exclusive=True,
+        )
         try:
             time.sleep(2.1)
             self.board.reset_input_buffer()
@@ -530,8 +584,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Continuously mirror Codex lifecycle hooks to Codex Pet."
     )
-    parser.add_argument("--port", default="auto", help="serial port or 'auto'")
-    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument(
+        "--port",
+        default="auto",
+        help=(
+            "verified P4 /dev/cu.* path or 'auto'; exact ESP32-P4/JC4880P443C "
+            "metadata is required"
+        ),
+    )
+    parser.add_argument("--baud", type=valid_baud, default=115200)
     parser.add_argument("--state-dir", type=Path, default=default_state_dir())
     parser.add_argument("--poll", type=positive_float, default=0.25)
     parser.add_argument("--active-ttl", type=positive_float, default=900.0)
@@ -655,8 +716,11 @@ def main() -> int:
                 now = time.monotonic()
                 if should_warn_port(now, next_port_warning_at):
                     print(
-                        "No unique ESP32-P4 serial port found; reconnect the board "
-                        "or set --port to its /dev/cu.* device",
+                        "No uniquely identifiable ESP32-P4 serial port found; exact "
+                        "ESP32-P4/JC4880P443C metadata is required and generic "
+                        "Espressif USB JTAG/serial descriptors are rejected. "
+                        "Reconnect the board or set --port to its verified /dev/cu.* "
+                        "device",
                         file=sys.stderr,
                     )
                     next_port_warning_at = now + PORT_WARNING_INTERVAL
@@ -777,10 +841,13 @@ def main() -> int:
             break
         time.sleep(args.poll)
 
+    once_connected = link is not None
     if link is not None:
         _close_quietly(link)
     if weather_worker is not None:
         weather_worker.stop()
+    if args.once and not args.dry_run and not once_connected:
+        return 1
     return 0
 
 

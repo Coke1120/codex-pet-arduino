@@ -17,10 +17,26 @@ from pathlib import Path
 from typing import Any, Dict
 
 VALID_STATES = ("idle", "running", "waiting", "review")
+VALID_EVENTS = frozenset(
+    (
+        "SessionStart",
+        "SessionEnd",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "PermissionRequest",
+        "PreCompact",
+        "PostCompact",
+        "SubagentStart",
+        "SubagentStop",
+        "Stop",
+    )
+)
 REVIEW_PATTERN = re.compile(
     r"(?<![a-z0-9_])"
     r"(?:review|tests?|pytest|unittest|vitest|jest|lint|ruff|mypy|"
-    r"typecheck|check|git\s+diff)"
+    r"typecheck|git\s+diff(?:\s+--check)?|cargo\s+check|"
+    r"(?:npm|pnpm|yarn)\s+(?:run\s+)?check)"
     r"(?![a-z0-9_])"
 )
 
@@ -59,22 +75,32 @@ def session_key(payload: Dict[str, Any]) -> str:
 
 def write_event(payload: Dict[str, Any], state_dir: Path) -> Path:
     state_dir.mkdir(parents=True, exist_ok=True)
+    state_dir.chmod(0o700)
+    event = str(payload.get("hook_event_name") or "")
     record = {
         "version": 1,
         "state": event_state(payload),
-        "event": str(payload.get("hook_event_name") or "unknown"),
+        "event": event if event in VALID_EVENTS else "unknown",
         "updated_at": time.time(),
     }
     destination = state_dir / (session_key(payload) + ".json")
     fd, temporary = tempfile.mkstemp(prefix=".event-", suffix=".json", dir=str(state_dir))
     try:
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
             json.dump(record, handle, separators=(",", ":"))
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, destination)
+        destination.chmod(0o600)
     finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             os.unlink(temporary)
         except FileNotFoundError:

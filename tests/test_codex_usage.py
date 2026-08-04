@@ -4,12 +4,13 @@
 import importlib.util
 import json
 import os
+import stat
 import tempfile
 import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -200,6 +201,175 @@ class UsageAggregationTests(unittest.TestCase):
 
 
 class UsageWorkerTests(unittest.TestCase):
+    def test_session_index_avoids_repeating_full_tree_walks(self):
+        now = datetime(2026, 8, 4, 12, 0, tzinfo=HK)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = write_session(
+                root,
+                now - timedelta(days=3),
+                "long-running.jsonl",
+                [token_event("2026-08-04T03:00:00Z", 90, 30, 5, 20)],
+            )
+            os.utime(path, (now.timestamp(), now.timestamp()))
+            wall = [now.timestamp()]
+            monotonic = [0.0]
+            worker = usage.UsageWorker(
+                root,
+                collector=usage.collect_usage,
+                wall_clock=lambda: wall[0],
+                monotonic_clock=lambda: monotonic[0],
+            )
+            full_scans = []
+            original_rglob = Path.rglob
+
+            def counted_rglob(session_root, pattern):
+                full_scans.append((session_root, pattern))
+                return original_rglob(session_root, pattern)
+
+            with patch.object(Path, "rglob", counted_rglob):
+                self.assertEqual(worker.refresh_if_due(blocking=True).latest_session_tokens, 90)
+                self.assertEqual(len(full_scans), 1)
+
+                wall[0] += 60
+                monotonic[0] += 60
+                self.assertEqual(worker.refresh_if_due(blocking=True).latest_session_tokens, 90)
+
+            self.assertEqual(len(full_scans), 1)
+
+    def test_session_index_bounded_rescan_finds_new_long_running_session(self):
+        now = datetime(2026, 8, 4, 12, 0, tzinfo=HK)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            initial = write_session(
+                root,
+                now - timedelta(days=3),
+                "initial.jsonl",
+                [token_event("2026-08-04T03:00:00Z", 90, 30, 5, 20)],
+            )
+            os.utime(initial, (now.timestamp(), now.timestamp()))
+            index = usage.SessionPathIndex(rescan_interval=120)
+            wall = [now.timestamp()]
+            monotonic = [0.0]
+            worker = usage.UsageWorker(
+                root,
+                collector=usage.collect_usage,
+                session_index=index,
+                wall_clock=lambda: wall[0],
+                monotonic_clock=lambda: monotonic[0],
+            )
+            full_scans = []
+            original_rglob = Path.rglob
+
+            def counted_rglob(session_root, pattern):
+                full_scans.append((session_root, pattern))
+                return original_rglob(session_root, pattern)
+
+            with patch.object(Path, "rglob", counted_rglob):
+                self.assertEqual(worker.refresh_if_due(blocking=True).latest_session_tokens, 90)
+
+                new_path = write_session(
+                    root,
+                    now - timedelta(days=4),
+                    "new-long-running.jsonl",
+                    [token_event("2026-08-04T04:00:00Z", 120, 30, 6, 21)],
+                )
+                os.utime(new_path, (now.timestamp() + 60, now.timestamp() + 60))
+
+                wall[0] += 60
+                monotonic[0] += 60
+                self.assertEqual(worker.refresh_if_due(blocking=True).latest_session_tokens, 90)
+                self.assertEqual(len(full_scans), 1)
+
+                wall[0] += 61
+                monotonic[0] += 61
+                self.assertEqual(worker.refresh_if_due(blocking=True).latest_session_tokens, 120)
+
+            self.assertEqual(len(full_scans), 2)
+
+    def test_session_index_reactivates_dormant_path_without_bounded_rescan(self):
+        now = datetime(2026, 8, 4, 12, 0, tzinfo=HK)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = write_session(
+                root,
+                now - timedelta(days=3),
+                "dormant.jsonl",
+                [token_event("2026-08-04T03:00:00Z", 90, 30, 5, 20)],
+            )
+            old_epoch = (now - timedelta(days=3)).timestamp()
+            os.utime(path, (old_epoch, old_epoch))
+            index = usage.SessionPathIndex(rescan_interval=120)
+            wall = [now.timestamp()]
+            monotonic = [0.0]
+            worker = usage.UsageWorker(
+                root,
+                collector=usage.collect_usage,
+                session_index=index,
+                wall_clock=lambda: wall[0],
+                monotonic_clock=lambda: monotonic[0],
+            )
+            full_scans = []
+            original_rglob = Path.rglob
+
+            def counted_rglob(session_root, pattern):
+                full_scans.append((session_root, pattern))
+                return original_rglob(session_root, pattern)
+
+            with patch.object(Path, "rglob", counted_rglob):
+                self.assertEqual(
+                    worker.refresh_if_due(blocking=True).latest_session_tokens,
+                    0,
+                )
+                self.assertEqual(len(full_scans), 1)
+
+                with path.open("a", encoding="utf-8") as stream:
+                    stream.write(
+                        "\n"
+                        + json.dumps(
+                            token_event("2026-08-04T04:00:00Z", 120, 30, 6, 21)
+                        )
+                    )
+                os.utime(path, (now.timestamp() + 60, now.timestamp() + 60))
+
+                wall[0] += 60
+                monotonic[0] += 60
+                snapshot = worker.refresh_if_due(blocking=True)
+
+            self.assertEqual(snapshot.latest_session_tokens, 120)
+            self.assertEqual(snapshot.today_tokens, 60)
+            self.assertEqual(len(full_scans), 1)
+
+    def test_session_index_drops_disappeared_history_without_failing_refresh(self):
+        now = datetime(2026, 8, 4, 12, 0, tzinfo=HK)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = write_session(
+                root,
+                now - timedelta(days=3),
+                "disappearing.jsonl",
+                [token_event("2026-08-04T03:00:00Z", 90, 30, 5, 20)],
+            )
+            os.utime(path, (now.timestamp(), now.timestamp()))
+            wall = [now.timestamp()]
+            monotonic = [0.0]
+            worker = usage.UsageWorker(
+                root,
+                collector=usage.collect_usage,
+                session_index=usage.SessionPathIndex(rescan_interval=120),
+                wall_clock=lambda: wall[0],
+                monotonic_clock=lambda: monotonic[0],
+            )
+
+            self.assertEqual(worker.refresh_if_due(blocking=True).latest_session_tokens, 90)
+            path.unlink()
+            wall[0] += 60
+            monotonic[0] += 60
+            snapshot = worker.refresh_if_due(blocking=True)
+
+        self.assertEqual(snapshot.latest_session_tokens, 0)
+        self.assertIsNone(worker.last_error())
+
     def test_cache_contains_aggregate_numbers_only_and_is_loaded(self):
         snapshot = usage.UsageSnapshot(10, 20, 5, 15, 100)
         with tempfile.TemporaryDirectory() as temporary:
@@ -268,6 +438,24 @@ class UsageWorkerTests(unittest.TestCase):
         self.assertIsNotNone(worker._refresh_thread)
         worker._refresh_thread.join(timeout=1)
         self.assertEqual(worker.snapshot(), snapshot)
+
+    def test_cache_and_parent_directory_use_private_modes(self):
+        snapshot = usage.UsageSnapshot(10, 20, 5, 15, 100)
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_dir = Path(temporary) / "cache"
+            cache_dir.mkdir(mode=0o777)
+            cache = cache_dir / "usage.json"
+            cache.write_text("{}", encoding="utf-8")
+            cache.chmod(0o644)
+
+            usage._save_cache(cache, snapshot)
+
+            self.assertEqual(stat.S_IMODE(cache_dir.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(cache.stat().st_mode), 0o600)
+            self.assertEqual(
+                json.loads(cache.read_text(encoding="utf-8")), snapshot.__dict__
+            )
+            self.assertEqual(list(cache_dir.glob("usage.json.tmp.*")), [])
 
 
 class CodexBarQuotaTests(unittest.TestCase):
@@ -396,6 +584,18 @@ class CodexBarQuotaTests(unittest.TestCase):
         self.assertEqual(set(cached), set(snapshot.__dict__))
         self.assertTrue(all(isinstance(value, int) for value in cached.values()))
         self.assertEqual(reloaded.snapshot(), snapshot)
+
+    def test_quota_worker_contains_decimal_invalid_operation(self):
+        def invalid_collector():
+            raise usage.InvalidOperation("invalid decimal")
+
+        worker = usage.CodexBarQuotaWorker(
+            collector=invalid_collector,
+            monotonic_clock=lambda: 0,
+        )
+
+        self.assertIsNone(worker.refresh_if_due(blocking=True))
+        self.assertIn("InvalidOperation", worker.last_error())
 
 
 if __name__ == "__main__":

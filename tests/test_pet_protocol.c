@@ -82,6 +82,10 @@ int main(void)
     assert(pet_protocol_parse("quota 50 1 -1 2 3 4", &command) == PET_PROTOCOL_OUT_OF_RANGE);
     assert(pet_protocol_parse("quota 50 1 60 2 -2 4", &command) == PET_PROTOCOL_OUT_OF_RANGE);
 
+    char unterminated[PET_PROTOCOL_LINE_CAPACITY];
+    memset(unterminated, 'x', sizeof(unterminated));
+    assert(pet_protocol_parse(unterminated, &command) == PET_PROTOCOL_INVALID_FORMAT);
+
     assert(strcmp(pet_weather_condition_label(PET_WEATHER_PARTLY_CLOUDY), "Partly cloudy") == 0);
     assert(pet_weather_condition_is_critical(PET_WEATHER_THUNDER));
     assert(!pet_weather_condition_is_critical(PET_WEATHER_RAIN));

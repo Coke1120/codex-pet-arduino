@@ -27,6 +27,8 @@
 #define PET_WIRELESS_BLE_STOP_TASK_STACK 4096U
 #define PET_WIRELESS_SCAN_FETCH_LIMIT 32U
 #define PET_WIRELESS_RSSI_REFRESH_MS 3000U
+#define PET_WIRELESS_SCAN_TIMEOUT_US INT64_C(15000000)
+#define PET_WIRELESS_CONNECT_TIMEOUT_US INT64_C(30000000)
 #define PET_WIRELESS_BLE_STOP_TIMEOUT_MS 5000U
 #define PET_WIRELESS_BLE_SYNC_TIMEOUT_US INT64_C(5000000)
 
@@ -70,6 +72,7 @@ static bool s_wifi_enabled;
 static bool s_wifi_toggle_pending;
 static bool s_wifi_forget_pending;
 static pet_wireless_wifi_state_t s_scan_previous_state;
+static int64_t s_wifi_operation_deadline_us;
 static bool s_ble_synced;
 static bool s_ble_advertising_requested;
 static bool s_ble_command_pending;
@@ -162,7 +165,8 @@ static int ble_start_advertising(void)
     }
 
     struct ble_gap_adv_params parameters = {0};
-    parameters.conn_mode = BLE_GAP_CONN_MODE_UND;
+    /* No product GATT service is exposed, so accepting connections has no purpose. */
+    parameters.conn_mode = BLE_GAP_CONN_MODE_NON;
     parameters.disc_mode = BLE_GAP_DISC_MODE_GEN;
     result = ble_gap_adv_start(s_ble_address_type, NULL, BLE_HS_FOREVER, &parameters,
                                ble_gap_event, NULL);
@@ -427,6 +431,15 @@ static void wifi_event_handler(void *argument, esp_event_base_t event_base, int3
 {
     (void)argument;
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_SCAN_DONE) {
+        xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
+        const bool scan_pending = s_snapshot.wifi == PET_WIRELESS_WIFI_SCANNING;
+        if (scan_pending) {
+            s_wifi_operation_deadline_us = 0;
+        }
+        xSemaphoreGive(s_snapshot_lock);
+        if (!scan_pending) {
+            return;
+        }
         if (enqueue(COMMAND_WIFI_SCAN_DONE, NULL) != PET_WIRELESS_OK) {
             xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
             s_snapshot.wifi = PET_WIRELESS_WIFI_ERROR;
@@ -438,16 +451,28 @@ static void wifi_event_handler(void *argument, esp_event_base_t event_base, int3
 
     xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+        s_wifi_operation_deadline_us = 0;
         s_snapshot.wifi = PET_WIRELESS_WIFI_CONNECTED;
+        s_snapshot.last_error = ESP_OK;
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         bool connection_failed = s_snapshot.wifi == PET_WIRELESS_WIFI_CONNECTING;
-        s_snapshot.wifi = !s_wifi_enabled ? PET_WIRELESS_WIFI_DISABLED
-                            : connection_failed ? PET_WIRELESS_WIFI_ERROR
-                                                : PET_WIRELESS_WIFI_IDLE;
+        s_wifi_operation_deadline_us = 0;
+        if (!s_wifi_enabled) {
+            s_snapshot.wifi = PET_WIRELESS_WIFI_DISABLED;
+            s_snapshot.last_error = ESP_OK;
+        } else if (connection_failed) {
+            s_snapshot.wifi = PET_WIRELESS_WIFI_ERROR;
+        } else if (s_snapshot.wifi != PET_WIRELESS_WIFI_ERROR) {
+            s_snapshot.wifi = PET_WIRELESS_WIFI_IDLE;
+            s_snapshot.last_error = event_data != NULL
+                                        ? ((const wifi_event_sta_disconnected_t *)event_data)->reason
+                                        : ESP_ERR_WIFI_NOT_CONNECT;
+        }
         if (connection_failed && event_data != NULL) {
             const wifi_event_sta_disconnected_t *disconnected = event_data;
             s_snapshot.last_error = disconnected->reason;
         }
+        s_snapshot.ssid[0] = '\0';
         s_snapshot.rssi = 0;
     }
     xSemaphoreGive(s_snapshot_lock);
@@ -474,7 +499,7 @@ static esp_err_t initialize_wifi(void)
     wifi_init_config_t configuration = WIFI_INIT_CONFIG_DEFAULT();
     result = esp_wifi_init(&configuration);
     if (result == ESP_OK) {
-        result = esp_wifi_set_storage(WIFI_STORAGE_FLASH);
+        result = esp_wifi_set_storage(WIFI_STORAGE_RAM);
     }
     if (result == ESP_OK) {
         result = esp_wifi_set_mode(WIFI_MODE_STA);
@@ -527,9 +552,11 @@ static void fetch_scan_results(void)
     if (result == ESP_OK) {
         memcpy(s_snapshot.scan_results, model.scan_results, sizeof(model.scan_results));
         s_snapshot.scan_result_count = model.scan_result_count;
+        s_wifi_operation_deadline_us = 0;
         s_snapshot.wifi = s_scan_previous_state == PET_WIRELESS_WIFI_CONNECTED
                               ? PET_WIRELESS_WIFI_CONNECTED
                               : PET_WIRELESS_WIFI_IDLE;
+        s_snapshot.last_error = ESP_OK;
     } else {
         s_snapshot.wifi = PET_WIRELESS_WIFI_ERROR;
         s_snapshot.last_error = result;
@@ -547,7 +574,18 @@ static void refresh_connection(void)
     }
 
     wifi_ap_record_t record = {0};
-    if (esp_wifi_sta_get_ap_info(&record) != ESP_OK) {
+    const esp_err_t result = esp_wifi_sta_get_ap_info(&record);
+    if (result != ESP_OK) {
+        xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
+        if (s_snapshot.wifi == PET_WIRELESS_WIFI_CONNECTED) {
+            s_snapshot.wifi = result == ESP_ERR_WIFI_NOT_CONNECT
+                                  ? PET_WIRELESS_WIFI_IDLE
+                                  : PET_WIRELESS_WIFI_ERROR;
+            s_snapshot.ssid[0] = '\0';
+            s_snapshot.rssi = 0;
+            s_snapshot.last_error = result;
+        }
+        xSemaphoreGive(s_snapshot_lock);
         return;
     }
     xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
@@ -578,10 +616,42 @@ static void handle_connect(connect_request_t *request)
 
     xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
     if (result != ESP_OK) {
+        s_wifi_operation_deadline_us = 0;
         s_snapshot.wifi = PET_WIRELESS_WIFI_ERROR;
+        s_snapshot.ssid[0] = '\0';
         s_snapshot.last_error = result;
+    } else if (s_snapshot.wifi == PET_WIRELESS_WIFI_CONNECTING) {
+        s_wifi_operation_deadline_us =
+            esp_timer_get_time() + PET_WIRELESS_CONNECT_TIMEOUT_US;
     }
     xSemaphoreGive(s_snapshot_lock);
+}
+
+static void check_wifi_operation_timeout(void)
+{
+    const int64_t now = esp_timer_get_time();
+    pet_wireless_wifi_state_t timed_out_state = PET_WIRELESS_WIFI_DISABLED;
+
+    xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
+    if ((s_snapshot.wifi == PET_WIRELESS_WIFI_SCANNING ||
+         s_snapshot.wifi == PET_WIRELESS_WIFI_CONNECTING) &&
+        pet_wireless_deadline_expired(now, s_wifi_operation_deadline_us)) {
+        timed_out_state = s_snapshot.wifi;
+        s_wifi_operation_deadline_us = 0;
+        s_snapshot.wifi = PET_WIRELESS_WIFI_ERROR;
+        s_snapshot.last_error = ESP_ERR_TIMEOUT;
+        if (timed_out_state == PET_WIRELESS_WIFI_CONNECTING) {
+            s_snapshot.ssid[0] = '\0';
+            s_snapshot.rssi = 0;
+        }
+    }
+    xSemaphoreGive(s_snapshot_lock);
+
+    if (timed_out_state == PET_WIRELESS_WIFI_SCANNING) {
+        (void)esp_wifi_scan_stop();
+    } else if (timed_out_state == PET_WIRELESS_WIFI_CONNECTING) {
+        (void)esp_wifi_disconnect();
+    }
 }
 
 static void handle_ble_command(ble_command_type_t command)
@@ -683,6 +753,7 @@ static void handle_command(const command_t *command)
             if (result == ESP_OK) {
                 s_wifi_enabled = true;
                 s_snapshot.wifi = PET_WIRELESS_WIFI_IDLE;
+                s_snapshot.last_error = ESP_OK;
             }
             xSemaphoreGive(s_snapshot_lock);
             break;
@@ -693,19 +764,26 @@ static void handle_command(const command_t *command)
             s_wifi_toggle_pending = false;
             if (result == ESP_OK || result == ESP_ERR_WIFI_NOT_STARTED) {
                 s_wifi_enabled = false;
+                s_wifi_operation_deadline_us = 0;
                 s_snapshot.wifi = PET_WIRELESS_WIFI_DISABLED;
+                s_snapshot.ssid[0] = '\0';
                 s_snapshot.rssi = 0;
+                s_snapshot.last_error = ESP_OK;
             }
             xSemaphoreGive(s_snapshot_lock);
             break;
         case COMMAND_WIFI_SCAN: {
             const wifi_scan_config_t scan = {.show_hidden = true};
             result = esp_wifi_scan_start(&scan, false);
-            if (result != ESP_OK) {
-                xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
+            xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
+            if (result == ESP_OK && s_snapshot.wifi == PET_WIRELESS_WIFI_SCANNING) {
+                s_wifi_operation_deadline_us =
+                    esp_timer_get_time() + PET_WIRELESS_SCAN_TIMEOUT_US;
+            } else if (result != ESP_OK) {
+                s_wifi_operation_deadline_us = 0;
                 s_snapshot.wifi = PET_WIRELESS_WIFI_ERROR;
-                xSemaphoreGive(s_snapshot_lock);
             }
+            xSemaphoreGive(s_snapshot_lock);
             break;
         }
         case COMMAND_WIFI_SCAN_DONE:
@@ -716,15 +794,24 @@ static void handle_command(const command_t *command)
             return;
         case COMMAND_WIFI_FORGET: {
             wifi_config_t empty_configuration = {0};
-            (void)esp_wifi_disconnect();
-            result = esp_wifi_set_config(WIFI_IF_STA, &empty_configuration);
+            const esp_err_t disconnect_result = esp_wifi_disconnect();
+            const esp_err_t config_result =
+                esp_wifi_set_config(WIFI_IF_STA, &empty_configuration);
             secure_zero(&empty_configuration, sizeof(empty_configuration));
+            result = (disconnect_result == ESP_OK ||
+                      disconnect_result == ESP_ERR_WIFI_NOT_CONNECT ||
+                      disconnect_result == ESP_ERR_WIFI_NOT_STARTED)
+                         ? config_result
+                         : disconnect_result;
             xSemaphoreTake(s_snapshot_lock, portMAX_DELAY);
             s_wifi_forget_pending = false;
             if (result == ESP_OK) {
-                s_snapshot.wifi = PET_WIRELESS_WIFI_IDLE;
+                s_wifi_operation_deadline_us = 0;
+                s_snapshot.wifi = s_wifi_enabled ? PET_WIRELESS_WIFI_IDLE
+                                                 : PET_WIRELESS_WIFI_DISABLED;
                 s_snapshot.ssid[0] = '\0';
                 s_snapshot.rssi = 0;
+                s_snapshot.last_error = ESP_OK;
             }
             xSemaphoreGive(s_snapshot_lock);
             break;
@@ -775,6 +862,7 @@ static void wireless_task(void *argument)
         } else {
             refresh_connection();
         }
+        check_wifi_operation_timeout();
         check_ble_sync_timeout();
     }
 }
@@ -834,6 +922,7 @@ pet_wireless_result_t pet_wireless_start(void)
     s_wifi_enabled = false;
     s_wifi_toggle_pending = false;
     s_wifi_forget_pending = false;
+    s_wifi_operation_deadline_us = 0;
     s_ble_synced = false;
     s_ble_advertising_requested = false;
     s_ble_command_pending = false;
@@ -961,8 +1050,10 @@ pet_wireless_result_t pet_wireless_wifi_connect(const char *ssid, const char *pa
     if (request == NULL) {
         return PET_WIRELESS_NO_MEMORY;
     }
-    memcpy(request->ssid, ssid, strlen(ssid));
-    memcpy(request->password, password, strlen(password));
+    const size_t ssid_length = strnlen(ssid, PET_WIRELESS_MAX_SSID_LEN + 1U);
+    const size_t password_length = strnlen(password, sizeof(request->password));
+    memcpy(request->ssid, ssid, ssid_length);
+    memcpy(request->password, password, password_length);
 
     if (xSemaphoreTake(s_snapshot_lock, 0U) != pdTRUE) {
         secure_zero(request, sizeof(*request));

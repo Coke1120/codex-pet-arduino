@@ -7,6 +7,7 @@ This guide records evidence established on a GUITION JC4880P443C-I-W with an ESP
 - [Safety boundaries](#safety-boundaries)
 - [Physical USB mapping](#physical-usb-mapping)
 - [Establish source and toolchain identity](#establish-source-and-toolchain-identity)
+- [Build isolated P4 variants](#build-isolated-p4-variants)
 - [Stop serial owners](#stop-serial-owners)
 - [Enumerate and identify USB](#enumerate-and-identify-usb)
 - [Confirm Download Mode, chip, and flash](#confirm-download-mode-chip-and-flash)
@@ -53,6 +54,10 @@ silence on CH340 is expected and is not application-crash evidence.
 
 ## Establish source and toolchain identity
 
+ESP-IDF 5.5.1 is the sole maintained MCU framework. LVGL, the selected BSP,
+`esp_wifi_remote`, and ESP-Hosted are ESP-IDF components; Arduino is unsupported
+and inactive.
+
 Run from the repository root:
 
 ```bash
@@ -69,6 +74,54 @@ source "$HOME/.espressif/frameworks/esp-idf-v5.5.1/export.sh"
 PY="$(command -v python)"
 "$PY" -m esptool version
 ```
+
+## Build isolated P4 variants
+
+Never flash a repo-local `esp32-p4/build/` tree or repo-local effective
+`esp32-p4/sdkconfig`. They can silently retain the wrong variant. Create a new
+build directory and effective sdkconfig for every build.
+
+Display-safe baseline:
+
+```bash
+cd esp32-p4
+P4_SAFE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-pet-p4-safe.XXXXXX")"
+idf.py -B "$P4_SAFE_ROOT/build" \
+  -D "SDKCONFIG=$P4_SAFE_ROOT/sdkconfig" \
+  -D "SDKCONFIG_DEFAULTS=$PWD/sdkconfig.defaults" \
+  set-target esp32p4
+grep -q '^CONFIG_ESP_MAIN_TASK_STACK_SIZE=7680$' "$P4_SAFE_ROOT/sdkconfig"
+grep -q '^# CONFIG_CODEX_PET_C6_WIRELESS is not set$' "$P4_SAFE_ROOT/sdkconfig"
+idf.py -B "$P4_SAFE_ROOT/build" build
+test -n "$(find "$P4_SAFE_ROOT/build" -name '*.su' -print -quit)"
+find "$P4_SAFE_ROOT/build" -name '*.su' -print
+```
+
+Wireless P4 candidate:
+
+```bash
+cd esp32-p4
+P4_WIRELESS_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-pet-p4-wireless.XXXXXX")"
+idf.py -B "$P4_WIRELESS_ROOT/build" \
+  -D "SDKCONFIG=$P4_WIRELESS_ROOT/sdkconfig" \
+  -D "SDKCONFIG_DEFAULTS=$PWD/sdkconfig.defaults;$PWD/sdkconfig.ci-wireless" \
+  set-target esp32p4
+grep -q '^CONFIG_ESP_MAIN_TASK_STACK_SIZE=7680$' "$P4_WIRELESS_ROOT/sdkconfig"
+grep -q '^CONFIG_CODEX_PET_C6_WIRELESS=y$' "$P4_WIRELESS_ROOT/sdkconfig"
+idf.py -B "$P4_WIRELESS_ROOT/build" build
+test -n "$(find "$P4_WIRELESS_ROOT/build" -name '*.su' -print -quit)"
+find "$P4_WIRELESS_ROOT/build" -name '*.su' -print
+```
+
+The firmware has a compile-time 7,680-byte main-task stack floor. Its component
+compile flags make frames larger than 768 bytes fatal and generate `.su` files.
+A successful build without non-empty `.su` evidence is not an accepted artifact.
+Keep the effective sdkconfig, binaries, ELF/map, and `.su` evidence with the
+variant; never copy only the application binary into a shared directory.
+
+The display-safe P4 is always the first candidate. The wireless P4 and matching
+C6 are a separate candidate. Do not build or flash the C6 during display recovery
+unless C6 work is explicitly in scope.
 
 ## Stop serial owners
 
@@ -93,6 +146,11 @@ For every candidate:
 ```bash
 lsof "$PORT"
 ```
+
+Require exactly one identifiable P4 candidate. Current host selection rejects
+C6 metadata, unidentified CH340 adapters, and explicit paths whose USB metadata
+does not identify a supported P4. Direct tests use one exclusive owner for the
+entire session.
 
 No matching descriptor means no USB enumeration evidence. It is not a flash mismatch or firmware panic by itself; check cable data capability, connector, power, and boot mode first.
 
@@ -179,14 +237,32 @@ Expected successful sequence includes:
 5. GT911 touch identification and initialization.
 6. Application readiness lines.
 
+Also require byte-valued resource lines after `entry`, `display/BSP`, `UI`,
+`wireless`, and `final`:
+
+```text
+Main init resources after <stage>: <N> stack bytes free, <N> internal heap bytes free
+```
+
+Capture every value and any `Initialization failed at stage: ...` line. The
+checkpoint series is runtime evidence, not a universal pass threshold; compare
+the safe and wireless variants and investigate unexpected depletion before
+calling a candidate ready.
+
 Expected readiness:
 
 ```text
 Codex Pet ESP32-P4 ready
+Display/serial: ready
 Board: JC4880P443C-I-W
 Protocol: v2 lifecycle clock weather today-v1 usage-v1 quota-v1 codexbar-v1 wireless settings-v1
 Commands: idle running waiting review ping status capabilities clock weather usage quota
+Wireless: disabled at build time
 ```
+
+For a wireless build, `Wireless: startup requested; readiness pending` is
+deliberately not a readiness claim. Require the wireless-stage logs plus the
+same display, Serial, stack, heap, and physical evidence as the safe build.
 
 The following were observed as non-fatal when readiness, protocol, touch, and the physical display all succeeded:
 
@@ -248,6 +324,14 @@ A copied bundle, clean build, or wireless-enabled image remains a candidate. It
 becomes verified only after its exact binaries pass independent read-back,
 normal boot, protocol, and observer-confirmed display checks on the target board.
 
+Wireless privacy/behavior contracts are part of candidate acceptance:
+
+- Station credentials use `WIFI_STORAGE_RAM`, are cleared from temporary UI and
+  request buffers, are lost on reboot, and require the user to reconnect.
+- Passwords never enter public snapshots or logs.
+- BLE advertises `Codex Pet` in non-connectable mode because no product GATT
+  service exists. Discovery is not evidence of a usable BLE connection.
+
 ## Verify glyph and icon rendering
 
 Inspect the configured LVGL font before adding a Unicode weather or clock glyph.
@@ -289,8 +373,13 @@ Before declaring success, provide:
 5. Exact `ping`, `status`, and `capabilities` replies.
 6. Observer-confirmed screen state.
 7. Root cause and minimal fix.
-8. Changed files, artifact identity, and clean exact-target build/test results.
-9. Post-flash independent verification and physical result.
-10. Glyph/icon coverage and any hardware-only evidence still missing.
+8. Changed files, isolated effective sdkconfig, artifact identity, clean
+   exact-target build/test results, and `.su` evidence showing the fatal
+   768-byte frame gate passed.
+9. All five stack-high-water/internal-heap checkpoints and any failure stage.
+10. Post-flash independent verification and physical result.
+11. For wireless candidates, reboot credential-loss/reconnect behavior and
+    non-connectable BLE discovery evidence.
+12. Glyph/icon coverage and any hardware-only evidence still missing.
 
 Do not push or publish private generated pet assets. Do not push firmware changes until the user requests it.

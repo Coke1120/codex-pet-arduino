@@ -95,6 +95,32 @@ class P4WirelessConfigurationTests(unittest.TestCase):
         self.assertNotIn("password", snapshot.group("body").lower())
         self.assertIn('#define PET_WIRELESS_DEVICE_NAME "Codex Pet"', header)
 
+    def test_credentials_are_ram_only_and_sensitive_copies_are_zeroed(self):
+        source = (P4 / "main" / "pet_wireless.c").read_text(encoding="utf-8")
+        self.assertIn("esp_wifi_set_storage(WIFI_STORAGE_RAM)", source)
+        self.assertNotIn("WIFI_STORAGE_FLASH", source)
+        self.assertIn("secure_zero(&configuration, sizeof(configuration))", source)
+        self.assertIn("secure_zero(request, sizeof(*request))", source)
+
+    def test_wifi_operations_have_deadlines_and_ble_is_nonconnectable(self):
+        source = (P4 / "main" / "pet_wireless.c").read_text(encoding="utf-8")
+        self.assertIn("PET_WIRELESS_SCAN_TIMEOUT_US", source)
+        self.assertIn("PET_WIRELESS_CONNECT_TIMEOUT_US", source)
+        self.assertIn("check_wifi_operation_timeout();", source)
+        self.assertIn("esp_wifi_scan_stop()", source)
+        self.assertIn("result == ESP_ERR_WIFI_NOT_CONNECT", source)
+        self.assertIn("BLE_GAP_CONN_MODE_NON", source)
+        self.assertNotIn("BLE_GAP_CONN_MODE_UND", source)
+        self.assertEqual(
+            source.count("s_snapshot.backend = PET_WIRELESS_BACKEND_READY;"), 1
+        )
+        self.assertRegex(
+            source,
+            r"(?s)if \(result != ESP_OK\) \{.*?"
+            r"s_snapshot\.backend = PET_WIRELESS_BACKEND_ERROR;.*?"
+            r"\} else \{.*?s_snapshot\.backend = PET_WIRELESS_BACKEND_READY;",
+        )
+
     def test_lvgl_facing_calls_only_enqueue_radio_work(self):
         source = (P4 / "main" / "pet_wireless.c").read_text(encoding="utf-8")
         for function in (
