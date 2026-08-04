@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Pet Host Sync"
+  short_description: "Diagnose macOS lifecycle, weather, and quota sync"
+  default_prompt: "Use $codex-pet-host-sync to diagnose and verify the Mac-to-P4 lifecycle, weather, clock, and quota bridge."

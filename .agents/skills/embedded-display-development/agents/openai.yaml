@@ -1,0 +1,4 @@
+interface:
+  display_name: "Embedded Display Development"
+  short_description: "Evidence-gated ESP32-P4 display bring-up"
+  default_prompt: "Use $embedded-display-development to diagnose, flash, and verify the JC4880P443C-I-W display safely."

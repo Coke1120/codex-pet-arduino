@@ -1,6 +1,6 @@
 ---
 name: embedded-display-development
-description: Evidence-gated ESP32-P4 display bring-up and blank-screen recovery for the GUITION JC4880P443C-I-W. Use when identifying its USB connectors, flashing or verifying P4 firmware, capturing early boot failures, testing the serial protocol, or isolating display regressions.
+description: Evidence-gated ESP32-P4 display bring-up and blank-screen recovery for the GUITION JC4880P443C-I-W. Use when identifying its USB connectors, flashing or verifying P4 firmware, capturing early boot failures, testing the serial protocol, isolating display regressions, preparing safe/wireless A/B artifacts, or verifying icon and glyph rendering.
 ---
 
 # Embedded Display Development
@@ -18,7 +18,12 @@ Work from runtime evidence:
 7. Record the physical screen state separately from USB, flash, boot, and backlight evidence.
 8. Isolate the first regressing subsystem before editing configuration or firmware.
 9. After a fix, clean-build the exact P4 target, run tests, flash only the P4, repeat all three verifies, recapture boot/protocol evidence, and obtain visual confirmation.
+10. Keep safe P4, wireless P4, and matching C6 artifacts in separate directories with their own hashes and configuration identity.
+11. Verify requested glyph coverage before using Unicode. Use LVGL primitives or licensed image assets when the configured fonts lack emoji.
+12. Treat copied bundles and wireless-enabled builds as candidates until their exact binaries pass read-back, boot, protocol, and physical checks.
 
 Do not infer display success from compilation, write-side hashes, USB enumeration, boot readiness, or backlight alone. Do not change GPIO, DSI timing, BSP, or PSRAM settings without runtime evidence pointing there. Do not flash the ESP32-C6 unless it is explicitly in scope.
 
 Report the exact device/port, chip and flash identity, each flash-region result, boot or panic evidence, protocol replies, physical screen state, root cause, changed files, verification, and any remaining hardware-only evidence.
+
+Use `$codex-pet-host-sync` after direct protocol succeeds when the remaining issue is lifecycle hooks, launchd, clock, weather, CodexBar quota, or legacy usage synchronization.

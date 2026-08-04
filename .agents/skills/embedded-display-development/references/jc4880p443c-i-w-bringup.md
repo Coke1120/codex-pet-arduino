@@ -2,6 +2,24 @@
 
 This guide records evidence established on a GUITION JC4880P443C-I-W with an ESP32-P4 revision v1.3 and 16 MB flash. Re-identify every connected board rather than treating these values as assumptions.
 
+## Contents
+
+- [Safety boundaries](#safety-boundaries)
+- [Physical USB mapping](#physical-usb-mapping)
+- [Establish source and toolchain identity](#establish-source-and-toolchain-identity)
+- [Stop serial owners](#stop-serial-owners)
+- [Enumerate and identify USB](#enumerate-and-identify-usb)
+- [Confirm Download Mode, chip, and flash](#confirm-download-mode-chip-and-flash)
+- [Verify the three flash regions](#verify-the-three-flash-regions)
+- [Conservative P4 flash](#conservative-p4-flash)
+- [Capture normal boot](#capture-normal-boot)
+- [Test the protocol in one persistent session](#test-the-protocol-in-one-persistent-session)
+- [Record the physical screen independently](#record-the-physical-screen-independently)
+- [Keep firmware variants and handoffs unambiguous](#keep-firmware-variants-and-handoffs-unambiguous)
+- [Verify glyph and icon rendering](#verify-glyph-and-icon-rendering)
+- [Regression isolation learned on this repository](#regression-isolation-learned-on-this-repository)
+- [Completion gate](#completion-gate)
+
 ## Safety boundaries
 
 - Read the repository `AGENTS.md` and preserve uncommitted work.
@@ -211,6 +229,37 @@ Ask the observer to choose one exact state:
 
 Backlight does not prove panel initialization. Boot readiness proves display/UI construction returned but does not prove visible pixels. The public fallback is a central red square; seeing it proves the panel scanout path works but also proves no private generated pet asset was linked.
 
+## Keep firmware variants and handoffs unambiguous
+
+Keep each deliverable in its own directory:
+
+| Variant | P4 wireless option | Intended evidence |
+|---|---:|---|
+| Safe display recovery | Off | P4 display, protocol, and host-sync baseline |
+| Wireless candidate | On | P4-to-C6 startup plus unchanged display behavior |
+| Matching C6 image | Separate target | Wireless coprocessor compatibility only when C6 flashing is explicitly in scope |
+
+For every directory, include the source revision, target, relevant configuration,
+flash offsets, and SHA-256 hashes calculated after the final copy. Never verify
+one variant's flash against another variant's binaries. Keep private generated
+pet source and unlicensed assets out of public bundles.
+
+A copied bundle, clean build, or wireless-enabled image remains a candidate. It
+becomes verified only after its exact binaries pass independent read-back,
+normal boot, protocol, and observer-confirmed display checks on the target board.
+
+## Verify glyph and icon rendering
+
+Inspect the configured LVGL font before adding a Unicode weather or clock glyph.
+A source-code emoji literal does not prove that the built font contains it. When
+coverage is absent, prefer an LVGL primitive or a rights-safe converted image
+asset instead of silently relying on the fallback glyph.
+
+Build success proves only that the API and assets link. Inject every supported
+weather condition and physically confirm the home-page weather icon, Today-page
+weather icon, clock icon, and adjacent labels. Record unsupported/fallback glyphs,
+clipping, color, and alignment separately from the underlying weather/time values.
+
 ## Regression isolation learned on this repository
 
 Useful historical anchors:
@@ -240,8 +289,8 @@ Before declaring success, provide:
 5. Exact `ping`, `status`, and `capabilities` replies.
 6. Observer-confirmed screen state.
 7. Root cause and minimal fix.
-8. Changed files and clean exact-target build/test results.
+8. Changed files, artifact identity, and clean exact-target build/test results.
 9. Post-flash independent verification and physical result.
-10. Any hardware-only evidence still missing.
+10. Glyph/icon coverage and any hardware-only evidence still missing.
 
 Do not push or publish private generated pet assets. Do not push firmware changes until the user requests it.
