@@ -31,6 +31,7 @@ from codex_pet_usage import (
     build_quota_command,
     build_usage_command,
 )
+from codex_pet_device import board_score, canonicalize_usb_serial, select_p4_port
 
 try:
     import serial
@@ -377,32 +378,8 @@ def detected_ports() -> List[ListPortInfo]:
     )
 
 
-def board_score(port: ListPortInfo) -> int:
-    text = " ".join(
-        str(value or "")
-        for value in (port.description, port.manufacturer, port.product, port.interface)
-    ).lower()
-    if "esp32-c6" in text or "esp32c6" in text:
-        return 0
-    if "esp32-p4" in text or "esp32p4" in text or "jc4880p443c" in text:
-        return 150
-    return 0
-
-
-def choose_port(requested: str) -> Optional[str]:
-    ports = detected_ports()
-    if requested != "auto":
-        matches = [port for port in ports if port.device == requested]
-        if len(matches) != 1 or board_score(matches[0]) <= 0:
-            return None
-        return requested
-    scored = [(board_score(port), port) for port in ports]
-    candidates = [(score, port) for score, port in scored if score > 0]
-    if not candidates:
-        return None
-    strongest_score = max(score for score, _port in candidates)
-    strongest = [port for score, port in candidates if score == strongest_score]
-    return strongest[0].device if len(strongest) == 1 else None
+def choose_port(requested: str, pinned_serial: Optional[str] = None) -> Optional[str]:
+    return select_p4_port(detected_ports(), requested, pinned_serial)
 
 
 def _file_identity(path: Path) -> Optional[Tuple[int, int, int, int]]:
@@ -486,7 +463,11 @@ def should_warn_port(now: float, next_warning_at: float) -> bool:
 
 class P4Link:
     def __init__(
-        self, port: str, baud: int = 115200, capability_timeout: float = 0.5
+        self,
+        port: str,
+        baud: int = 115200,
+        capability_timeout: float = 0.5,
+        identity_validator: Optional[Callable[[], bool]] = None,
     ) -> None:
         self.port = port
         self.capabilities: Set[str] = set()
@@ -498,6 +479,8 @@ class P4Link:
             exclusive=True,
         )
         try:
+            if identity_validator is not None and not identity_validator():
+                raise OSError("ESP32-P4 USB identity changed after opening the port")
             time.sleep(2.1)
             self.board.reset_input_buffer()
             self._exchange("ping", "pong")
@@ -593,6 +576,10 @@ def main() -> int:
         ),
     )
     parser.add_argument("--baud", type=valid_baud, default=115200)
+    parser.add_argument(
+        "--p4-usb-serial",
+        help="pin one explicit P4 /dev/cu.* port by its complete USB serial",
+    )
     parser.add_argument("--state-dir", type=Path, default=default_state_dir())
     parser.add_argument("--poll", type=positive_float, default=0.25)
     parser.add_argument("--active-ttl", type=positive_float, default=900.0)
@@ -618,6 +605,14 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
+
+    if args.p4_usb_serial is not None:
+        if args.port == "auto" or not args.port.startswith("/dev/cu."):
+            parser.error("--p4-usb-serial requires an explicit /dev/cu.* --port")
+        try:
+            args.p4_usb_serial = canonicalize_usb_serial(args.p4_usb_serial)
+        except ValueError:
+            parser.error("--p4-usb-serial must be a complete 12-hex USB serial")
 
     stopped = False
 
@@ -660,10 +655,17 @@ def main() -> int:
             continue
 
         if link is None and time.monotonic() >= next_connect_at:
-            selected = choose_port(args.port)
+            selected = choose_port(args.port, args.p4_usb_serial)
             if selected:
                 try:
-                    link = P4Link(selected, args.baud)
+                    link = P4Link(
+                        selected,
+                        args.baud,
+                        identity_validator=lambda: choose_port(
+                            args.port, args.p4_usb_serial
+                        )
+                        == selected,
+                    )
                     sent = None
                     next_heartbeat_at = 0.0
                     next_clock_at = 0.0
@@ -710,6 +712,8 @@ def main() -> int:
                     )
                 except (OSError, serial.SerialException) as exc:
                     print("Codex Pet connection warning: {}".format(exc), file=sys.stderr)
+                    if link is not None:
+                        _close_quietly(link)
                     link = None
                     next_connect_at = time.monotonic() + 2.0
             else:

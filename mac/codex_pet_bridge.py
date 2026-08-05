@@ -14,7 +14,14 @@ this script with --state whenever Codex changes phase.
 import argparse
 import sys
 import time
-from typing import Iterable, List
+from pathlib import Path
+from typing import Iterable, List, Optional
+
+MAC_DIR = Path(__file__).resolve().parent
+if str(MAC_DIR) not in sys.path:
+    sys.path.insert(0, str(MAC_DIR))
+
+from codex_pet_device import board_score, canonicalize_usb_serial, select_p4_port
 
 try:
     import serial
@@ -59,49 +66,37 @@ def detected_ports() -> List[ListPortInfo]:
     )
 
 
-def board_score(port: ListPortInfo) -> int:
-    """Rank ports for supported Codex Pet boards without guessing adapters."""
-    text = " ".join(
-        str(value or "")
-        for value in (port.description, port.manufacturer, port.product, port.interface)
-    ).lower()
-    if "esp32-c6" in text or "esp32c6" in text:
-        return 0
-    if "esp32-p4" in text or "esp32p4" in text or "jc4880p443c" in text:
-        return 150
-    return 0
-
-
-def choose_port(requested: str) -> str:
+def choose_port(requested: str, pinned_serial: Optional[str] = None) -> str:
     ports = detected_ports()
+    selected = select_p4_port(ports, requested, pinned_serial)
+    if selected is not None:
+        return selected
+    if pinned_serial is not None:
+        raise SystemExit(
+            "The requested port does not uniquely match the pinned ESP32-P4 USB "
+            "identity. Verify the explicit /dev/cu.* path and current USB metadata."
+        )
     if requested != "auto":
-        matches = [port for port in ports if port.device == requested]
-        if len(matches) != 1 or board_score(matches[0]) <= 0:
-            raise SystemExit(
-                "The requested port is not an identifiable Codex Pet P4. "
-                "Exact ESP32-P4/JC4880P443C metadata is required; generic "
-                "Espressif USB JTAG/serial descriptors are rejected. Inspect "
-                "the port list and pass the verified /dev/cu.* device."
-            )
-        return requested
-
-    scored = [(board_score(port), port) for port in ports]
-    plausible = [(score, port) for score, port in scored if score > 0]
+        raise SystemExit(
+            "The requested port is not an identifiable Codex Pet P4. "
+            "Exact ESP32-P4/JC4880P443C metadata is required; generic "
+            "Espressif USB JTAG/serial descriptors are rejected. Inspect "
+            "the port list and pass the verified /dev/cu.* device."
+        )
+    plausible = [port for port in ports if board_score(port) > 0]
     if not plausible:
         raise SystemExit(
             "No identifiable Codex Pet board serial port found. Reconnect the board, "
             "inspect the port list, then choose the verified port with --port."
         )
-    strongest_score = max(score for score, _port in plausible)
-    strongest = [port for score, port in plausible if score == strongest_score]
-    if len(strongest) != 1:
-        joined = "\n  ".join(port_description(port) for port in strongest)
+    if len(plausible) != 1:
+        joined = "\n  ".join(port_description(port) for port in plausible)
         raise SystemExit(
             "More than one supported Codex Pet board was found; auto mode will "
             "not guess. Verify the intended device and choose it with --port:\n  "
             + joined
         )
-    return strongest[0].device
+    raise AssertionError("shared selector rejected one descriptor-qualified port")
 
 
 def normalise_state(raw: str) -> str:
@@ -160,11 +155,23 @@ def main() -> int:
         ),
     )
     parser.add_argument("--baud", type=valid_baud, default=115200)
+    parser.add_argument(
+        "--p4-usb-serial",
+        help="pin one explicit P4 /dev/cu.* port by its complete USB serial",
+    )
     parser.add_argument("--list", action="store_true", help="list serial ports and exit")
     parser.add_argument("--state", choices=VALID_STATES, help="send one state and exit")
     parser.add_argument("--interactive", action="store_true", help="prompt for states")
     parser.add_argument("--stdin", action="store_true", help="read states line-by-line from stdin")
     args = parser.parse_args()
+
+    if args.p4_usb_serial is not None:
+        if args.port == "auto" or not args.port.startswith("/dev/cu."):
+            parser.error("--p4-usb-serial requires an explicit /dev/cu.* --port")
+        try:
+            args.p4_usb_serial = canonicalize_usb_serial(args.p4_usb_serial)
+        except ValueError:
+            parser.error("--p4-usb-serial must be a complete 12-hex USB serial")
 
     if args.list:
         ports = detected_ports()
@@ -175,7 +182,7 @@ def main() -> int:
     if selected_modes != 1:
         parser.error("choose exactly one of --state, --interactive, or --stdin")
 
-    port = choose_port(args.port)
+    port = choose_port(args.port, args.p4_usb_serial)
     print("Opening {} at {} baud...".format(port, args.baud))
 
     # Opening the USB serial port resets the ESP32-P4; allow it to boot.
@@ -193,6 +200,11 @@ def main() -> int:
 
     with board:
         try:
+            if (
+                select_p4_port(detected_ports(), args.port, args.p4_usb_serial)
+                != port
+            ):
+                raise OSError("ESP32-P4 USB identity changed after opening the port")
             time.sleep(2.0)
             board.reset_input_buffer()
             exchange(board, "ping", "pong")

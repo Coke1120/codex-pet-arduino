@@ -68,9 +68,11 @@ absent does the daemon read local `~/.codex/sessions` `token_count` events and
 send aggregate integers. `--sessions-root` applies only to that fallback. Those
 local aggregates are not subscription quota or billing data.
 
-## 1. Install CodexBar and the Python dependency
+## 1. Install Python; optionally install CodexBar for quota
 
-Install and sign in to [CodexBar](https://github.com/steipete/CodexBar). The
+CodexBar is optional and required only for account quota display. Lifecycle,
+clock, and weather synchronization do not depend on it. To enable quota,
+install and sign in to [CodexBar](https://github.com/steipete/CodexBar). The
 daemon accepts either the `codexbar` executable on `PATH` or the helper bundled
 inside `CodexBar.app`. Confirm its Codex provider works before starting the
 daemon:
@@ -112,8 +114,30 @@ then pass its exact `/dev/cu.*` path using `--port`. Both automatic and explicit
 selection require current USB metadata that identifies the P4 by its exact
 `ESP32-P4` or `JC4880P443C` descriptor; C6 devices, generic Espressif VID
 `303A` `USB JTAG/serial debug unit` descriptors, and unidentified CH340 adapters
-are rejected. There is no generic-descriptor bypass: the daemon opens only the
-verified P4 port exclusively.
+are rejected by the ordinary selector. There is no VID/PID-only or
+`--allow-generic` bypass.
+
+If connector #4 exposes only that generic descriptor, establish a separate
+pinned identity before running the daemon:
+
+1. On connector #5 in Download Mode, run `esptool --chip esp32p4 chip_id` and
+   record the P4 MAC.
+2. Move to connector #4 and inspect `python -m serial.tools.list_ports --verbose`.
+3. Require the exact USB serial to equal the chip-ID MAC after canonicalization.
+4. Use both the explicit path and that serial:
+
+```bash
+.venv/bin/python codex_pet_daemon.py \
+  --port /dev/cu.<verified-p4-port> \
+  --p4-usb-serial <chip-id-matched-usb-serial>
+```
+
+Pinned selection remains fail-closed: `/dev/cu.*`, VID:PID `303A:1001`, exact
+Espressif metadata, one unique serial match, no C6 identity, an unchanged
+post-open identity, and the exact P4 `ping`/capability handshake are all
+required. The pin prevents accidental device confusion; USB metadata and the
+plaintext protocol are not cryptographic authentication. It is never accepted
+by `auto`, never auto-enrolled, and never authorizes flashing.
 Stop the LaunchAgent and every bridge/monitor first, verify `lsof "$PORT"` is
 clear, and keep exactly one serial owner for each test.
 The daemon re-sends the selected state every five seconds by default so a board
@@ -130,47 +154,20 @@ session JSONL somewhere other than `~/.codex/sessions`:
 ```bash
 .venv/bin/python codex_pet_daemon.py \
   --port /dev/cu.<verified-p4-port> \
+  --p4-usb-serial <chip-id-matched-usb-serial> \
   --sessions-root /path/to/codex/sessions
 ```
+
+Omit `--p4-usb-serial` when the descriptor already names the P4. A configured
+pin and port are one identity tuple; both must still match after every reset or
+reconnect before lifecycle, clock, weather, usage, or quota data is written.
 
 An incomplete capability response is retried instead of silently downgrading the
 v2 board. Weather, quota, and legacy usage
 failures retain their last good caches and are reported once per distinct error
 until a successful refresh.
 
-## 3. Configure Codex hooks
-
-Codex loads user hooks from `~/.codex/hooks.json`. From the repository root,
-use the merger to add every maintained lifecycle event without replacing
-unrelated hooks:
-
-```bash
-python3 tools/install_codex_hooks.py \
-  --hooks ~/.codex/hooks.json \
-  --python python3 \
-  --hook-script mac/codex_pet_hook.py
-```
-
-[`examples/codex-hooks.json`](../examples/codex-hooks.json) shows the resulting
-event groups and can also be merged manually after replacing
-`/ABSOLUTE/PATH/TO/codex-pet-dev-board` with the real repository path.
-
-After installing the macOS runtime in step 4, the hook commands should point to
-`~/Library/Application Support/CodexPet/runtime/codex_pet_hook.py`; rerunning the
-installer keeps that copy current without requiring Codex/background processes
-to access repository source under `Documents`. Confirm the installed hook hash
-matches the intended repository source before trusting it.
-
-Restart Codex Desktop after changing hooks. Codex requires non-managed command
-hooks to be reviewed and trusted before they run. Open `/hooks` in Codex, inspect
-the exact commands, and trust them only when they point to the verified
-Application Support runtime. Repository-source commands under `Documents` may
-work in an interactive shell yet fail in the background due to macOS privacy
-controls; do not treat interactive readability as hook-runtime proof.
-
-The hook always exits successfully and never makes allow/deny decisions, so a display or Serial failure cannot block a Codex turn.
-
-## 4. Install or update the launchd runtime
+## 3. Install or update the launchd runtime
 
 macOS may deny background LaunchAgents access to source code kept under
 `Documents`. The installer maintains a small runtime copy under
@@ -185,14 +182,18 @@ bash mac/install.sh
 
 Rerun the same command after pulling a new repository version. It first copies
 an existing venv (or creates a new one) into a sibling staged runtime, then
-updates the daemon, hook, usage reader, requirements, and hash-locked
+updates the daemon, device selector, hook, usage reader, requirements, and hash-locked
 dependencies only in that stage. The live runtime remains untouched until the
 launchd unload preflight succeeds. When `--port` is omitted, an existing explicit port is
 preserved; pass `--port /dev/cu.usbmodem...` when more than one plausible board
-is attached, or `--port auto` to reset an explicit selection. A preserved or
+is attached, or `--port auto` to reset an explicit selection. When an attested
+pin is required, pass `--p4-usb-serial <serial>` with an explicit port; the
+installer preserves the port/pin tuple together, and
+`--clear-p4-usb-serial` explicitly removes the pin. A preserved or
 explicit path is still rejected at runtime unless its current metadata identifies
-the P4 by the exact descriptor rules above; generic Espressif USB metadata cannot
-be selected. The installer marks its plist as Codex Pet managed and recognizes
+the P4 by the exact descriptor rules above or matches the separately enrolled
+pin contract. Generic Espressif USB metadata without a pin cannot be selected.
+The installer marks its plist as Codex Pet managed and recognizes
 an older unmarked plist only when its normalized Python and daemon paths exactly
 match the current runtime. It stages the replacement runtime tree off-path,
 proves every recognized competing job and the selected job are unloaded, and
@@ -223,6 +224,46 @@ rm ~/Library/LaunchAgents/com.coke1120.codex-pet.plist
 
 Logs are written beside the runtime under
 `~/Library/Application Support/CodexPet/daemon.out.log` and `daemon.err.log`.
+
+## 4. Configure Codex hooks
+
+Codex loads user hooks from `~/.codex/hooks.json`. After installing the isolated
+runtime in step 3, use the merger from the repository root to add every
+maintained lifecycle event without replacing unrelated hooks:
+
+```bash
+python3 tools/install_codex_hooks.py \
+  --hooks "$HOME/.codex/hooks.json" \
+  --python "$HOME/Library/Application Support/CodexPet/runtime/bin/python" \
+  --hook-script "$HOME/Library/Application Support/CodexPet/runtime/codex_pet_hook.py"
+```
+
+The merger is additive: it preserves unrelated hooks and does not silently
+replace a different existing command. When migrating an older Codex Pet setup,
+inspect `~/.codex/hooks.json` and remove only obsolete Codex Pet groups that
+still point into a repository path before trusting the installed-runtime group.
+
+[`examples/codex-hooks.json`](../examples/codex-hooks.json) shows the resulting
+event groups and can also be merged manually after replacing
+`/ABSOLUTE/PATH/TO/codex-pet-dev-board` with the real repository path.
+
+The hook commands should point to the Application Support runtime shown above;
+rerunning the installer keeps that copy current without requiring
+Codex/background processes to access repository source under `Documents`.
+Confirm the installed hook hash matches the intended repository source before
+trusting it. Repeat both the runtime installation and hook merge/trust flow on
+every Mac that will drive the board; a `/dev/cu.*` path from another Mac is not
+portable.
+
+Restart Codex Desktop after changing hooks. Codex requires non-managed command
+hooks to be reviewed and trusted before they run. Open `/hooks` in Codex, inspect
+the exact commands, and trust them only when they point to the verified
+Application Support runtime. Repository-source commands under `Documents` may
+work in an interactive shell yet fail in the background due to macOS privacy
+controls; do not treat interactive readability as hook-runtime proof.
+
+The hook always exits successfully and never makes allow/deny decisions, so a
+display or Serial failure cannot block a Codex turn.
 
 ## Verification
 

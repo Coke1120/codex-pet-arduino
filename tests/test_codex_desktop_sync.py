@@ -29,6 +29,7 @@ def load(name: str, relative: str):
 hook = load("codex_pet_hook", "mac/codex_pet_hook.py")
 bridge = load("codex_pet_bridge", "mac/codex_pet_bridge.py")
 daemon = load("codex_pet_daemon", "mac/codex_pet_daemon.py")
+device = load("codex_pet_device_tests", "mac/codex_pet_device.py")
 
 
 def fake_port(device: str, description: str) -> ListPortInfo:
@@ -41,6 +42,16 @@ def fake_generic_espressif_port(device: str) -> ListPortInfo:
     port = fake_port(device, "USB JTAG/serial debug unit")
     port.manufacturer = "Espressif"
     port.vid = 0x303A
+    return port
+
+
+def fake_pinned_p4(
+    path: str = "/dev/cu.usbmodem3101",
+    serial_number: str = "A1B2C3D4E5F6",
+) -> ListPortInfo:
+    port = fake_generic_espressif_port(path)
+    port.pid = 0x1001
+    port.serial_number = serial_number
     return port
 
 
@@ -400,6 +411,34 @@ class ManualBridgeTests(unittest.TestCase):
             ):
                 bridge.valid_baud(raw)
 
+    def test_pinned_identity_is_revalidated_after_open_before_handshake(self) -> None:
+        selected = fake_pinned_p4()
+        changed = fake_pinned_p4(serial_number="001122334455")
+        board = FakeBoard()
+        with patch.object(
+            bridge.sys,
+            "argv",
+            [
+                "codex_pet_bridge.py",
+                "--port",
+                selected.device,
+                "--p4-usb-serial",
+                "a1:b2:c3:d4:e5:f6",
+                "--state",
+                "running",
+            ],
+        ), patch.object(
+            bridge, "detected_ports", side_effect=[[selected], [changed]]
+        ), patch.object(
+            bridge.serial, "Serial", return_value=board
+        ), patch.object(bridge.time, "sleep"), redirect_stdout(
+            io.StringIO()
+        ), redirect_stderr(io.StringIO()):
+            self.assertEqual(bridge.main(), 1)
+
+        self.assertEqual(board.writes, [])
+        self.assertTrue(board.closed)
+
 
 class FakeBoard:
     def __init__(self, replies=(), close_error=None):
@@ -506,8 +545,163 @@ class DaemonPortTests(unittest.TestCase):
 
         self.assertIn("Could not exclusively lock port", stderr.getvalue())
 
+    def test_pinned_identity_change_closes_before_all_payloads(self) -> None:
+        def open_link(*args, **kwargs):
+            self.assertFalse(kwargs["identity_validator"]())
+            raise OSError("ESP32-P4 USB identity changed after opening the port")
+
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            daemon.sys,
+            "argv",
+            [
+                "codex_pet_daemon.py",
+                "--state-dir",
+                temporary,
+                "--port",
+                "/dev/cu.test",
+                "--p4-usb-serial",
+                "A1B2C3D4E5F6",
+                "--once",
+            ],
+        ), patch.object(
+            daemon, "choose_port", side_effect=["/dev/cu.test", None]
+        ), patch.object(
+            daemon, "P4Link", side_effect=open_link
+        ), patch.object(
+            daemon.signal, "signal"
+        ), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(daemon.main(), 1)
+
+
+class PinnedDeviceIdentityTests(unittest.TestCase):
+    PIN = "A1:B2:C3:D4:E5:F6"
+
+    def test_complete_serial_forms_are_canonicalized(self) -> None:
+        for raw in ("a1b2c3d4e5f6", "a1:b2:c3:d4:e5:f6", "a1-b2-c3-d4-e5-f6"):
+            with self.subTest(raw=raw):
+                self.assertEqual(device.canonicalize_usb_serial(raw), self.PIN)
+
+    def test_malformed_partial_wildcard_mixed_and_empty_serials_are_rejected(self) -> None:
+        for raw in (
+            "",
+            "A1B2C3D4E5",
+            "A1:B2:C3:D4:E5",
+            "A1:B2-C3:D4:E5:F6",
+            "A1:B2:C3:D4:E5:*",
+            "A1:B2:C3:D4:E5:F6:00",
+            " A1B2C3D4E5F6 ",
+        ):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                device.canonicalize_usb_serial(raw)
+
+    def assert_pin_rejected(self, ports, requested="/dev/cu.usbmodem3101") -> None:
+        with patch.object(daemon, "detected_ports", return_value=ports):
+            self.assertIsNone(daemon.choose_port(requested, self.PIN))
+        with patch.object(bridge, "detected_ports", return_value=ports):
+            with self.assertRaisesRegex(SystemExit, "pinned ESP32-P4"):
+                bridge.choose_port(requested, self.PIN)
+
+    def test_correct_generic_espressif_identity_is_accepted_only_with_pin(self) -> None:
+        port = fake_pinned_p4()
+        with patch.object(daemon, "detected_ports", return_value=[port]):
+            self.assertEqual(daemon.choose_port(port.device, self.PIN), port.device)
+            self.assertIsNone(daemon.choose_port(port.device))
+            self.assertIsNone(daemon.choose_port("auto"))
+        with patch.object(bridge, "detected_ports", return_value=[port]):
+            self.assertEqual(bridge.choose_port(port.device, self.PIN), port.device)
+            with self.assertRaisesRegex(SystemExit, "generic.*rejected"):
+                bridge.choose_port(port.device)
+
+    def test_wrong_vid_or_pid_is_rejected(self) -> None:
+        for attribute, value in (("vid", 0x1234), ("pid", 0x0001)):
+            port = fake_pinned_p4()
+            setattr(port, attribute, value)
+            with self.subTest(attribute=attribute):
+                self.assert_pin_rejected([port])
+
+    def test_explicit_c6_metadata_is_rejected(self) -> None:
+        for identity in (
+            "ESP32-C6 USB JTAG",
+            "ESP32 C6 USB JTAG",
+            "ESP32_C6 USB JTAG",
+            "ESP32C6 USB JTAG",
+            "C6 USB JTAG",
+        ):
+            port = fake_pinned_p4()
+            port.interface = identity
+            with self.subTest(identity=identity):
+                self.assert_pin_rejected([port])
+
+    def test_vid_pid_and_pin_without_espressif_identity_are_rejected(self) -> None:
+        port = fake_pinned_p4()
+        port.description = "USB JTAG/serial debug unit"
+        port.manufacturer = None
+        self.assert_pin_rejected([port])
+
+    def test_missing_wrong_and_malformed_port_serial_are_rejected(self) -> None:
+        for serial_number in (None, "001122334455", "A1:B2:C3:D4:E5"):
+            port = fake_pinned_p4()
+            port.serial_number = serial_number
+            with self.subTest(serial_number=serial_number):
+                self.assert_pin_rejected([port])
+
+    def test_duplicate_serial_is_rejected_across_enumerated_ports(self) -> None:
+        first = fake_pinned_p4()
+        second = fake_pinned_p4("/dev/cu.usbmodem4101", "a1-b2-c3-d4-e5-f6")
+        self.assert_pin_rejected([first, second])
+
+    def test_mismatched_explicit_path_is_rejected(self) -> None:
+        port = fake_pinned_p4("/dev/cu.usbmodem4101")
+        self.assert_pin_rejected([port])
+
+    def test_auto_or_non_callout_port_with_pin_is_rejected_by_cli_without_echo(self) -> None:
+        for module, program in (
+            (bridge, "codex_pet_bridge.py"),
+            (daemon, "codex_pet_daemon.py"),
+        ):
+            for requested in ("auto", "/dev/tty.usbmodem3101"):
+                raw_pin = "a1b2c3d4e5f6"
+                with self.subTest(module=module.__name__, requested=requested), patch.object(
+                    module.sys,
+                    "argv",
+                    [program, "--port", requested, "--p4-usb-serial", raw_pin],
+                ), redirect_stderr(io.StringIO()) as stderr, self.assertRaises(SystemExit):
+                    module.main()
+                self.assertNotIn(raw_pin, stderr.getvalue())
+
+    def test_malformed_cli_pin_is_rejected_without_echo(self) -> None:
+        raw_pin = "A1:B2:C3:*"
+        for module, program in (
+            (bridge, "codex_pet_bridge.py"),
+            (daemon, "codex_pet_daemon.py"),
+        ):
+            with self.subTest(module=module.__name__), patch.object(
+                module.sys,
+                "argv",
+                [
+                    program,
+                    "--port",
+                    "/dev/cu.usbmodem3101",
+                    "--p4-usb-serial",
+                    raw_pin,
+                ],
+            ), redirect_stderr(io.StringIO()) as stderr, self.assertRaises(SystemExit):
+                module.main()
+            self.assertNotIn(raw_pin, stderr.getvalue())
+
 
 class P4LinkTests(unittest.TestCase):
+    def test_identity_revalidation_closes_before_handshake(self) -> None:
+        board = FakeBoard([b"pong\n", b"CAPABILITIES clock\n"])
+        with patch.object(daemon.serial, "Serial", return_value=board), patch.object(
+            daemon.time, "sleep"
+        ), self.assertRaisesRegex(OSError, "identity changed"):
+            daemon.P4Link("/dev/cu.test", identity_validator=lambda: False)
+
+        self.assertEqual(board.writes, [])
+        self.assertEqual(board.reset_count, 0)
+        self.assertTrue(board.closed)
+
     def test_constructor_handshake_and_state_protocol(self) -> None:
         board = FakeBoard(
             [b"boot message\n", b"pong\n", b"CAPABILITIES clock weather usage\n"]

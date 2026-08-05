@@ -42,6 +42,13 @@ On the vendor connector diagram used during bring-up:
 
 Connector #4 can also expose the ROM loader in Download Mode, where esptool identifies USB-Serial/JTAG. Connector #5 is the clearest USB-OTG download path. The same macOS port suffix may appear on either connector at different times, so identify the active device instead of relying on the suffix.
 
+On macOS, connector #4 may retain the generic `USB JTAG/serial debug unit`
+descriptor in normal operation. That string and VID:PID `303A:1001` are not P4
+identity by themselves. For continuous host sync, first prove the P4 on #5 with
+`esptool --chip esp32p4 chip_id`, then require its MAC to equal #4's exact USB
+serial before enrolling `--p4-usb-serial`. The pin is host-sync-only and never
+replaces `chip_id` before flashing.
+
 A CH340-style `/dev/cu.usbserial*` device is not the maintained P4 console. With:
 
 ```text

@@ -10,6 +10,9 @@ default_label="com.coke1120.codex-pet"
 label="$default_label"
 legacy_label="org.example.codex-pet"
 port=""
+port_explicit=0
+p4_usb_serial=""
+p4_usb_serial_action="preserve"
 skip_dependencies=0
 skip_launchctl=0
 
@@ -19,6 +22,8 @@ usage() {
     "" \
     "Options:" \
     "  --port PORT              Serial port; preserves the installed value by default" \
+    "  --p4-usb-serial SERIAL   Pin an explicit port to a 12-hex USB serial" \
+    "  --clear-p4-usb-serial    Remove the installed P4 USB serial pin" \
     "  --label LABEL            LaunchAgent label (default: com.coke1120.codex-pet)" \
     "  --runtime-dir DIR        Runtime destination" \
     "  --launch-agents-dir DIR  LaunchAgent plist directory" \
@@ -32,7 +37,26 @@ while [[ $# -gt 0 ]]; do
     --port)
       [[ $# -ge 2 ]] || { printf 'Missing value for --port\n' >&2; exit 2; }
       port=$2
+      port_explicit=1
       shift 2
+      ;;
+    --p4-usb-serial)
+      [[ $# -ge 2 ]] || { printf 'Missing value for --p4-usb-serial\n' >&2; exit 2; }
+      [[ "$p4_usb_serial_action" != "clear" ]] || {
+        printf 'Cannot combine --p4-usb-serial with --clear-p4-usb-serial.\n' >&2
+        exit 2
+      }
+      p4_usb_serial=$2
+      p4_usb_serial_action="set"
+      shift 2
+      ;;
+    --clear-p4-usb-serial)
+      [[ "$p4_usb_serial_action" != "set" ]] || {
+        printf 'Cannot combine --p4-usb-serial with --clear-p4-usb-serial.\n' >&2
+        exit 2
+      }
+      p4_usb_serial_action="clear"
+      shift
       ;;
     --label)
       [[ $# -ge 2 ]] || { printf 'Missing value for --label\n' >&2; exit 2; }
@@ -79,6 +103,47 @@ host_python=$(command -v python3 || true)
   printf 'Python 3 is required to install Codex Pet.\n' >&2
   exit 1
 }
+
+if [[ "$p4_usb_serial_action" == "set" ]]; then
+  if [[ $port_explicit -ne 1 || "$port" != /dev/cu.* ]]; then
+    printf '%s\n' '--p4-usb-serial requires an explicit /dev/cu.* --port.' >&2
+    exit 2
+  fi
+  p4_usb_serial=$(
+    "$host_python" - "$p4_usb_serial" <<'PY'
+import re
+import sys
+
+raw = sys.argv[1]
+if re.fullmatch(r"[0-9A-Fa-f]{12}", raw):
+    compact = raw
+elif re.fullmatch(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", raw):
+    compact = raw.replace(":", "")
+elif re.fullmatch(r"(?:[0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}", raw):
+    compact = raw.replace("-", "")
+else:
+    raise SystemExit(1)
+print(":".join(compact[index:index + 2] for index in range(0, 12, 2)).upper())
+PY
+  ) || {
+    printf 'Invalid P4 USB serial. Expected 12 hexadecimal digits.\n' >&2
+    exit 2
+  }
+fi
+
+runtime_source_names=(
+  codex_pet_daemon.py
+  codex_pet_device.py
+  codex_pet_hook.py
+  codex_pet_usage.py
+  requirements.txt
+)
+for runtime_source_name in "${runtime_source_names[@]}"; do
+  [[ -f "$repo_root/mac/$runtime_source_name" ]] || {
+    printf 'Required runtime source is missing: %s\n' "$runtime_source_name" >&2
+    exit 1
+  }
+done
 
 normalized_runtime_dir=$(
   "$host_python" - \
@@ -192,10 +257,30 @@ if [[ ! -x "$staged_runtime_python" ]]; then
   "$host_python" -m venv "$runtime_staged_dir"
 fi
 
-atomic_copy "$repo_root/mac/codex_pet_daemon.py" "$runtime_staged_dir/codex_pet_daemon.py"
-atomic_copy "$repo_root/mac/codex_pet_hook.py" "$runtime_staged_dir/codex_pet_hook.py"
-atomic_copy "$repo_root/mac/codex_pet_usage.py" "$runtime_staged_dir/codex_pet_usage.py"
-atomic_copy "$repo_root/mac/requirements.txt" "$runtime_staged_dir/requirements.txt"
+for runtime_source_name in "${runtime_source_names[@]}"; do
+  atomic_copy \
+    "$repo_root/mac/$runtime_source_name" \
+    "$runtime_staged_dir/$runtime_source_name"
+done
+
+"$host_python" - "$repo_root/mac" "$runtime_staged_dir" "${runtime_source_names[@]}" <<'PY'
+import hashlib
+import os
+import sys
+
+source_dir, staged_dir, *names = sys.argv[1:]
+for name in names:
+    source = os.path.join(source_dir, name)
+    staged = os.path.join(staged_dir, name)
+    if not os.path.isfile(staged):
+        raise SystemExit(f"staged runtime file is missing: {name}")
+    with open(source, "rb") as handle:
+        source_hash = hashlib.sha256(handle.read()).digest()
+    with open(staged, "rb") as handle:
+        staged_hash = hashlib.sha256(handle.read()).digest()
+    if source_hash != staged_hash:
+        raise SystemExit(f"staged runtime hash mismatch: {name}")
+PY
 
 if [[ $skip_dependencies -eq 0 ]]; then
   "$staged_runtime_python" -m pip install --disable-pip-version-check --require-hashes \
@@ -230,6 +315,7 @@ done < <(
     "${candidate_plists[@]-}" <<'PY'
 import os
 import plistlib
+import re
 import sys
 
 managed_marker, expected_python, expected_daemon = sys.argv[1:4]
@@ -245,7 +331,7 @@ for path in sys.argv[4:]:
             print(path)
             continue
         arguments = payload.get("ProgramArguments")
-        if not isinstance(arguments, list) or len(arguments) != 4:
+        if not isinstance(arguments, list) or len(arguments) not in (4, 6):
             continue
         if (
             arguments[2] != "--port"
@@ -254,6 +340,14 @@ for path in sys.argv[4:]:
             or not isinstance(arguments[1], str)
             or os.path.normpath(arguments[0]) != expected_python
             or os.path.normpath(arguments[1]) != expected_daemon
+        ):
+            continue
+        if len(arguments) == 6 and (
+            arguments[4] != "--p4-usb-serial"
+            or not isinstance(arguments[5], str)
+            or re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", arguments[5]) is None
+            or arguments[3] == "auto"
+            or not arguments[3].startswith("/dev/cu.")
         ):
             continue
         print(path)
@@ -280,10 +374,13 @@ add_existing_path "$legacy_plist"
 for recognized_path in "${recognized_plists[@]-}"; do
   add_existing_path "$recognized_path"
 done
-if [[ -z "$port" && ${#port_sources[@]} -gt 0 ]]; then
-  port=$(
+existing_tuple_json=""
+if [[ ${#port_sources[@]} -gt 0 ]]; then
+  existing_tuple_json=$(
     "$host_python" - "${port_sources[@]}" <<'PY'
+import json
 import plistlib
+import re
 import sys
 
 for path in sys.argv[1:]:
@@ -292,20 +389,58 @@ for path in sys.argv[1:]:
             payload = plistlib.load(handle)
         if not isinstance(payload, dict):
             raise TypeError("plist root must be a dictionary")
-        arguments = payload.get("ProgramArguments", [])
-        if not isinstance(arguments, list):
-            raise TypeError("ProgramArguments must be a list")
-        index = arguments.index("--port")
-        value = arguments[index + 1]
-        if isinstance(value, str):
-            print(value)
-            break
-    except (OSError, TypeError, ValueError, IndexError, plistlib.InvalidFileException):
+        arguments = payload.get("ProgramArguments")
+        if (
+            not isinstance(arguments, list)
+            or len(arguments) not in (4, 6)
+            or not all(isinstance(value, str) for value in arguments)
+            or arguments[2] != "--port"
+        ):
+            continue
+        port = arguments[3]
+        pin = ""
+        if len(arguments) == 6:
+            if (
+                arguments[4] != "--p4-usb-serial"
+                or re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", arguments[5]) is None
+                or not port.startswith("/dev/cu.")
+            ):
+                continue
+            pin = arguments[5]
+        print(json.dumps([port, pin]))
+        break
+    except (OSError, TypeError, plistlib.InvalidFileException):
         pass
 PY
   )
 fi
+existing_port=""
+existing_p4_usb_serial=""
+if [[ -n "$existing_tuple_json" ]]; then
+  existing_port=$("$host_python" -c 'import json, sys; print(json.loads(sys.argv[1])[0])' "$existing_tuple_json")
+  existing_p4_usb_serial=$("$host_python" -c 'import json, sys; print(json.loads(sys.argv[1])[1])' "$existing_tuple_json")
+fi
+if [[ $port_explicit -eq 0 ]]; then
+  port=$existing_port
+fi
+if [[ "$p4_usb_serial_action" == "preserve" ]]; then
+  if [[ $port_explicit -eq 0 || "$port" == "$existing_port" ]]; then
+    p4_usb_serial=$existing_p4_usb_serial
+  elif [[ -n "$existing_p4_usb_serial" ]]; then
+    printf '%s\n' \
+      'Changing a pinned --port requires --p4-usb-serial or --clear-p4-usb-serial.' >&2
+    exit 2
+  else
+    p4_usb_serial=""
+  fi
+elif [[ "$p4_usb_serial_action" == "clear" ]]; then
+  p4_usb_serial=""
+fi
 port=${port:-auto}
+if [[ -n "$p4_usb_serial" && "$port" != /dev/cu.* ]]; then
+  printf '%s\n' 'A P4 USB serial pin requires an explicit /dev/cu.* port.' >&2
+  exit 2
+fi
 
 plist_service_label() {
   local path=$1
@@ -379,17 +514,21 @@ create_plist_temp() {
     "$runtime_python" \
     "$runtime_dir/codex_pet_daemon.py" \
     "$port" \
+    "$p4_usb_serial" \
     "$(dirname "$runtime_dir")/daemon.out.log" \
     "$(dirname "$runtime_dir")/daemon.err.log" \
     "$managed_marker" <<'PY'
 import plistlib
 import sys
 
-destination, label, python, daemon, port, stdout, stderr, managed_marker = sys.argv[1:]
+destination, label, python, daemon, port, pin, stdout, stderr, managed_marker = sys.argv[1:]
+program_arguments = [python, daemon, "--port", port]
+if pin:
+    program_arguments.extend(["--p4-usb-serial", pin])
 payload = {
     "Label": label,
     "CodexPetManaged": managed_marker,
-    "ProgramArguments": [python, daemon, "--port", port],
+    "ProgramArguments": program_arguments,
     "RunAtLoad": True,
     "KeepAlive": True,
     "ProcessType": "Background",
@@ -706,3 +845,8 @@ fi
 
 printf 'Codex Pet runtime installed at %s\n' "$runtime_dir"
 printf 'LaunchAgent: %s (port: %s)\n' "$label" "$port"
+if [[ "$p4_usb_serial_action" == "clear" ]]; then
+  printf 'P4 USB serial pin: cleared\n'
+elif [[ -n "$p4_usb_serial" ]]; then
+  printf 'P4 USB serial pin: configured\n'
+fi

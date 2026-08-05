@@ -184,6 +184,14 @@ metadata is excluded. Stop launchd, bridges, monitors, and every other owner;
 then use `lsof "$PORT"` and keep one exclusive serial owner for the complete
 boot/protocol session.
 
+If the normal connector #4 console reports only generic Espressif
+`303A:1001` metadata, ordinary automatic and explicit selection still reject
+it. A host-sync-only pin may be enrolled only after the #5 P4 `chip_id` MAC and
+the #4 USB serial are proven equal. The daemon then requires the explicit port,
+the exact pinned serial, one unique match, an unchanged post-open identity, and
+the P4 protocol handshake on every reconnect. This pin is not authentication
+against a malicious USB device and must never be used by a flash command.
+
 ## Flash and monitor
 
 Put the P4 into download mode if the board is not already detected by the
@@ -268,8 +276,11 @@ From the repository root:
 ```bash
 python3 mac/codex_pet_bridge.py \
   --port /dev/cu.<verified-p4-port> \
+  --p4-usb-serial <chip-id-matched-usb-serial> \
   --interactive
 ```
+
+Omit `--p4-usb-serial` when the current descriptor already names the P4.
 
 The lifecycle protocol uses these newline-delimited commands:
 

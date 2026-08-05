@@ -69,7 +69,14 @@ selection must remain unambiguous; pass `--port` when multiple Espressif devices
 are attached. Explicit selection is not a bypass: current USB metadata must still
 identify a supported P4 by the exact `ESP32-P4` or `JC4880P443C` descriptor; C6
 metadata, generic Espressif VID `303A` `USB JTAG/serial debug unit` metadata, and
-generic CH340 paths are not accepted. There is no generic-descriptor override.
+generic CH340 paths are not accepted by the ordinary selector. There is no
+VID/PID-only or allow-generic override. When connector #4 is generic-only, first
+prove the P4 with `esptool --chip esp32p4 chip_id` on connector #5 and require
+that MAC to equal connector #4's USB serial. Only then may an explicit port be
+combined with `--p4-usb-serial`. The pin requires `303A:1001`, exact Espressif
+metadata, one unique serial match, no C6 identity, and post-open revalidation on
+every reconnect. It is accidental-confusion protection rather than
+cryptographic authentication and is never flash authorization.
 Require no owner before the test and one expected exclusive owner after opening
 the port. The bridge must complete the exact P4 `ping` handshake before a state
 write; the daemon must complete both `ping` and capability negotiation first.
@@ -200,6 +207,18 @@ Install or update the isolated runtime only after direct protocol tests:
 ```bash
 bash mac/install.sh --port /dev/cu.<verified-p4-port>
 ```
+
+For an already-attested generic connector #4 console:
+
+```bash
+bash mac/install.sh \
+  --port /dev/cu.<verified-p4-port> \
+  --p4-usb-serial <chip-id-matched-usb-serial>
+```
+
+The installer preserves the port/pin tuple from one plist when both options are
+omitted. Use `--clear-p4-usb-serial` to remove a prior pin explicitly; a pin is
+invalid with `--port auto`.
 
 The current service label is `com.coke1120.codex-pet`. New plists carry a Codex
 Pet managed marker; an unmarked legacy/custom plist is recognized only when its

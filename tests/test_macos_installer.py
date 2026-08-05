@@ -72,6 +72,10 @@ class MacInstallerTests(unittest.TestCase):
                 (ROOT / "mac" / "codex_pet_daemon.py").read_bytes(),
             )
             self.assertEqual(
+                (runtime / "codex_pet_device.py").read_bytes(),
+                (ROOT / "mac" / "codex_pet_device.py").read_bytes(),
+            )
+            self.assertEqual(
                 (runtime / "codex_pet_hook.py").read_bytes(),
                 (ROOT / "mac" / "codex_pet_hook.py").read_bytes(),
             )
@@ -107,6 +111,202 @@ class MacInstallerTests(unittest.TestCase):
             )
             self.assertEqual(list(runtime.glob("*.tmp.*")), [])
             self.assertEqual(list(launch_agents.glob("*.tmp.*")), [])
+
+    def test_installer_sets_canonical_p4_usb_serial_without_logging_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            runtime = base / "CodexPet" / "runtime"
+            launch_agents = base / "LaunchAgents"
+
+            result = self.run_installer(
+                runtime,
+                launch_agents,
+                "--port",
+                "/dev/cu.p4",
+                "--p4-usb-serial",
+                "aabbccddeeff",
+            )
+
+            with (launch_agents / "com.coke1120.codex-pet.plist").open("rb") as handle:
+                payload = plistlib.load(handle)
+            self.assertEqual(
+                payload["ProgramArguments"],
+                [
+                    str(runtime / "bin" / "python"),
+                    str(runtime / "codex_pet_daemon.py"),
+                    "--port",
+                    "/dev/cu.p4",
+                    "--p4-usb-serial",
+                    "AA:BB:CC:DD:EE:FF",
+                ],
+            )
+            self.assertIn("P4 USB serial pin: configured", result.stdout)
+            self.assertNotIn("AA:BB:CC:DD:EE:FF", result.stdout + result.stderr)
+
+    def test_installer_preserves_replaces_and_clears_port_pin_tuple(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            runtime = base / "CodexPet" / "runtime"
+            launch_agents = base / "LaunchAgents"
+            plist_path = launch_agents / "com.coke1120.codex-pet.plist"
+
+            self.run_installer(
+                runtime,
+                launch_agents,
+                "--port",
+                "/dev/cu.persisted-p4",
+                "--p4-usb-serial",
+                "11-22-33-44-55-66",
+            )
+            self.run_installer(runtime, launch_agents)
+            with plist_path.open("rb") as handle:
+                preserved = plistlib.load(handle)["ProgramArguments"]
+            self.assertEqual(
+                preserved[-4:],
+                [
+                    "--port",
+                    "/dev/cu.persisted-p4",
+                    "--p4-usb-serial",
+                    "11:22:33:44:55:66",
+                ],
+            )
+
+            self.run_installer(
+                runtime,
+                launch_agents,
+                "--port",
+                "/dev/cu.replaced-p4",
+                "--p4-usb-serial",
+                "a1:b2:c3:d4:e5:f6",
+            )
+            with plist_path.open("rb") as handle:
+                replaced = plistlib.load(handle)["ProgramArguments"]
+            self.assertEqual(
+                replaced[-4:],
+                [
+                    "--port",
+                    "/dev/cu.replaced-p4",
+                    "--p4-usb-serial",
+                    "A1:B2:C3:D4:E5:F6",
+                ],
+            )
+
+            cleared = self.run_installer(
+                runtime,
+                launch_agents,
+                "--clear-p4-usb-serial",
+            )
+            with plist_path.open("rb") as handle:
+                cleared_arguments = plistlib.load(handle)["ProgramArguments"]
+            self.assertEqual(
+                cleared_arguments[-2:], ["--port", "/dev/cu.replaced-p4"]
+            )
+            self.assertEqual(len(cleared_arguments), 4)
+            self.assertIn("P4 USB serial pin: cleared", cleared.stdout)
+            self.assertNotIn("A1:B2:C3:D4:E5:F6", cleared.stdout + cleared.stderr)
+
+    def test_installer_rejects_invalid_p4_usb_serial_before_mutation(self) -> None:
+        invalid_serials = (
+            "AABBCC",
+            "AA:BB:CC:DD:EE",
+            "AA:BB-CC:DD:EE:FF",
+            "AA:BB:CC:DD:EE:*",
+            "GG:BB:CC:DD:EE:FF",
+        )
+        for serial in invalid_serials:
+            with self.subTest(serial=serial), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                runtime = base / "CodexPet" / "runtime"
+                launch_agents = base / "LaunchAgents"
+                result = self.run_installer(
+                    runtime,
+                    launch_agents,
+                    "--port",
+                    "/dev/cu.p4",
+                    "--p4-usb-serial",
+                    serial,
+                    check=False,
+                )
+
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("Invalid P4 USB serial", result.stderr)
+                self.assertNotIn(serial, result.stdout + result.stderr)
+                self.assertFalse(runtime.exists())
+                self.assertFalse(launch_agents.exists())
+
+    def test_installer_rejects_new_pin_without_explicit_non_auto_port(self) -> None:
+        for port_arguments in ((), ("--port", "auto")):
+            with self.subTest(port_arguments=port_arguments), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                runtime = base / "CodexPet" / "runtime"
+                launch_agents = base / "LaunchAgents"
+                result = self.run_installer(
+                    runtime,
+                    launch_agents,
+                    *port_arguments,
+                    "--p4-usb-serial",
+                    "AABBCCDDEEFF",
+                    check=False,
+                )
+
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("explicit /dev/cu.* --port", result.stderr)
+                self.assertNotIn("AABBCCDDEEFF", result.stdout + result.stderr)
+                self.assertFalse(runtime.exists())
+                self.assertFalse(launch_agents.exists())
+
+    def test_installer_rejects_pin_with_non_callout_port_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            runtime = base / "CodexPet" / "runtime"
+            launch_agents = base / "LaunchAgents"
+            result = self.run_installer(
+                runtime,
+                launch_agents,
+                "--port",
+                "/dev/tty.usbmodem1",
+                "--p4-usb-serial",
+                "AABBCCDDEEFF",
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("explicit /dev/cu.* --port", result.stderr)
+            self.assertNotIn("AABBCCDDEEFF", result.stdout + result.stderr)
+            self.assertFalse(runtime.exists())
+            self.assertFalse(launch_agents.exists())
+
+    def test_changing_pinned_port_requires_replace_or_clear(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            runtime = base / "CodexPet" / "runtime"
+            launch_agents = base / "LaunchAgents"
+            plist_path = launch_agents / "com.coke1120.codex-pet.plist"
+            self.run_installer(
+                runtime,
+                launch_agents,
+                "--port",
+                "/dev/cu.original",
+                "--p4-usb-serial",
+                "AABBCCDDEEFF",
+            )
+            original = plist_path.read_bytes()
+
+            for replacement in ("/dev/cu.replacement", "auto"):
+                with self.subTest(replacement=replacement):
+                    result = self.run_installer(
+                        runtime,
+                        launch_agents,
+                        "--port",
+                        replacement,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn(
+                        "requires --p4-usb-serial or --clear-p4-usb-serial",
+                        result.stderr,
+                    )
+                    self.assertEqual(plist_path.read_bytes(), original)
 
     def test_pip_failure_does_not_mutate_existing_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -286,6 +486,75 @@ class MacInstallerTests(unittest.TestCase):
             )
             self.assertIn("port: /dev/cu.legacy-port", result.stdout)
 
+    def test_existing_tuple_selection_never_mixes_pin_from_lower_priority_plist(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            runtime = base / "CodexPet" / "runtime"
+            launch_agents = base / "LaunchAgents"
+            launch_agents.mkdir(parents=True)
+            selected_label = "com.example.selected"
+            selected_plist = launch_agents / (selected_label + ".plist")
+            default_plist = launch_agents / "com.coke1120.codex-pet.plist"
+            with selected_plist.open("wb") as handle:
+                plistlib.dump(
+                    {
+                        "Label": selected_label,
+                        "ProgramArguments": [
+                            "/selected/python",
+                            "/selected/daemon.py",
+                            "--port",
+                            "/dev/cu.selected",
+                        ],
+                    },
+                    handle,
+                )
+            with default_plist.open("wb") as handle:
+                plistlib.dump(
+                    {
+                        "Label": "com.coke1120.codex-pet",
+                        "ProgramArguments": [
+                            "/default/python",
+                            "/default/daemon.py",
+                            "--port",
+                            "/dev/cu.default",
+                            "--p4-usb-serial",
+                            "AA:BB:CC:DD:EE:FF",
+                        ],
+                    },
+                    handle,
+                )
+            fake_launchctl = base / "launchctl"
+            fake_launchctl.write_text(
+                "#!/usr/bin/env bash\n"
+                'if [[ "$1" == "print" ]]; then exit 1; fi\n',
+                encoding="utf-8",
+            )
+            fake_launchctl.chmod(0o755)
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "CODEX_PET_PLATFORM_NAME": "Darwin",
+                    "CODEX_PET_LAUNCHCTL_BIN": str(fake_launchctl),
+                    "CODEX_PET_USER_ID": "501",
+                }
+            )
+
+            self.run_installer(
+                runtime,
+                launch_agents,
+                "--label",
+                selected_label,
+                skip_launchctl=False,
+                env=environment,
+            )
+
+            with selected_plist.open("rb") as handle:
+                arguments = plistlib.load(handle)["ProgramArguments"]
+            self.assertEqual(arguments[-2:], ["--port", "/dev/cu.selected"])
+            self.assertEqual(len(arguments), 4)
+
     def test_custom_label_unloads_and_removes_default_and_legacy_agents(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -357,6 +626,8 @@ class MacInstallerTests(unittest.TestCase):
                             str(runtime / "codex_pet_daemon.py"),
                             "--port",
                             "/dev/cu.custom-port",
+                            "--p4-usb-serial",
+                            "AB:CD:EF:12:34:56",
                         ],
                     },
                     handle,
@@ -395,7 +666,15 @@ class MacInstallerTests(unittest.TestCase):
             self.assertEqual(list(launch_agents.glob("*.plist")), [new_plist])
             with new_plist.open("rb") as handle:
                 installed = plistlib.load(handle)
-            self.assertEqual(installed["ProgramArguments"][-1], "/dev/cu.custom-port")
+            self.assertEqual(
+                installed["ProgramArguments"][-4:],
+                [
+                    "--port",
+                    "/dev/cu.custom-port",
+                    "--p4-usb-serial",
+                    "AB:CD:EF:12:34:56",
+                ],
+            )
             self.assertIn("port: /dev/cu.custom-port", result.stdout)
             launchctl_calls = launchctl_log.read_text(encoding="utf-8")
             self.assertIn("bootout gui/501 {}".format(old_plist), launchctl_calls)
@@ -417,6 +696,8 @@ class MacInstallerTests(unittest.TestCase):
                 old_label,
                 "--port",
                 "/dev/cu.relocated",
+                "--p4-usb-serial",
+                "12:34:56:78:9a:bc",
             )
             old_plist = launch_agents / (old_label + ".plist")
             with old_plist.open("rb") as handle:
@@ -465,7 +746,15 @@ class MacInstallerTests(unittest.TestCase):
                     str(runtime_b / "codex_pet_daemon.py"),
                 ],
             )
-            self.assertEqual(installed["ProgramArguments"][-1], "/dev/cu.relocated")
+            self.assertEqual(
+                installed["ProgramArguments"][-4:],
+                [
+                    "--port",
+                    "/dev/cu.relocated",
+                    "--p4-usb-serial",
+                    "12:34:56:78:9A:BC",
+                ],
+            )
             self.assertIn("port: /dev/cu.relocated", result.stdout)
             launchctl_calls = launchctl_log.read_text(encoding="utf-8")
             self.assertIn("bootout gui/501 {}".format(old_plist), launchctl_calls)
@@ -761,6 +1050,8 @@ class MacInstallerTests(unittest.TestCase):
                 label,
                 "--port",
                 "/dev/cu.original",
+                "--p4-usb-serial",
+                "01:23:45:67:89:AB",
             )
             selected_plist = launch_agents / (label + ".plist")
             with selected_plist.open("rb") as handle:
@@ -774,6 +1065,7 @@ class MacInstallerTests(unittest.TestCase):
             runtime_files = {}
             for runtime_name in (
                 "codex_pet_daemon.py",
+                "codex_pet_device.py",
                 "codex_pet_hook.py",
                 "codex_pet_usage.py",
                 "requirements.txt",
@@ -825,6 +1117,8 @@ class MacInstallerTests(unittest.TestCase):
                 label,
                 "--port",
                 "/dev/cu.replacement",
+                "--p4-usb-serial",
+                "FE:DC:BA:98:76:54",
                 skip_launchctl=False,
                 env=environment,
                 check=False,
@@ -832,6 +1126,17 @@ class MacInstallerTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 1)
             self.assertEqual(selected_plist.read_bytes(), original_bytes)
+            with selected_plist.open("rb") as handle:
+                restored_arguments = plistlib.load(handle)["ProgramArguments"]
+            self.assertEqual(
+                restored_arguments[-4:],
+                [
+                    "--port",
+                    "/dev/cu.original",
+                    "--p4-usb-serial",
+                    "01:23:45:67:89:AB",
+                ],
+            )
             self.assertEqual(runtime_sentinel.read_text(encoding="utf-8"), "keep-old-runtime\n")
             for runtime_name, expected_bytes in runtime_files.items():
                 self.assertEqual((runtime / runtime_name).read_bytes(), expected_bytes)

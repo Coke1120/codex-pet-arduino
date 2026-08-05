@@ -125,7 +125,7 @@ vendor/jc4880p443c_i_w_bsp/       Licensed vendor BSP provenance snapshot
 - macOS
 - GUITION JC4880P443C-I-W and suitable USB cables
 - ESP-IDF 5.5.1
-- CodexBar with a working Codex login for account quota display
+- CodexBar is optional and required only for account quota display
 - Python 3
 - `ffmpeg` when converting a selected Codex Pet v2 atlas
 
@@ -244,6 +244,195 @@ When automatic port selection is ambiguous, install with the verified P4 port:
 bash mac/install.sh --port /dev/cu.<verified-p4-port>
 ```
 
+Some ESP32-P4 USB Serial/JTAG consoles expose only the generic Espressif
+`303A:1001` descriptor in normal operation. Do not accept that descriptor or
+VID/PID by itself. After `esptool --chip esp32p4 chip_id` has proved the P4 in
+Download Mode, match its MAC to the exact USB serial reported for connector #4,
+then enroll that already-attested identity explicitly:
+
+```bash
+bash mac/install.sh \
+  --port /dev/cu.<verified-p4-port> \
+  --p4-usb-serial <chip-id-matched-usb-serial>
+```
+
+The pin is conjunctive with the explicit path, is revalidated on every daemon
+reconnect, and never changes automatic selection or flash authorization. An
+unpinned generic descriptor remains rejected.
+
+### Moving the board to another Mac
+
+The flashed P4 display and touch UI remain on the board, but lifecycle, clock,
+weather, and quota are host-fed features. They do not become live on another
+Mac merely by reconnecting USB. Repeat the host setup on every Mac:
+
+1. Clone or copy this repository and ensure Python 3 is available. Install and
+   sign in to CodexBar only when Codex quota is required; Hong Kong weather does
+   not depend on CodexBar.
+2. Connect the P4 application console through connector #4 and rediscover its
+   `/dev/cu.*` path. Device paths are local to each Mac and may also change when
+   the USB topology changes, so do not copy the old Mac's path blindly. For an
+   already-attested generic console, reuse the same P4 USB serial pin with the
+   newly discovered path.
+3. Run the appropriate `mac/install.sh` command above. This installs the
+   isolated runtime and per-user LaunchAgent on that Mac; it intentionally does
+   not modify or trust Codex hooks automatically.
+4. Merge the installed lifecycle hook into that Mac's Codex configuration:
+
+   ```bash
+   python3 tools/install_codex_hooks.py \
+     --hooks "$HOME/.codex/hooks.json" \
+     --python "$HOME/Library/Application Support/CodexPet/runtime/bin/python" \
+     --hook-script "$HOME/Library/Application Support/CodexPet/runtime/codex_pet_hook.py"
+   ```
+
+   The merger is deliberately additive and preserves unrelated hooks. If this
+   Mac already has older Codex Pet commands that point into a repository path,
+   inspect `~/.codex/hooks.json` and remove only those obsolete Codex Pet groups;
+   a different existing command is not silently replaced.
+
+5. Restart Codex, open `/hooks`, inspect the exact Application Support command,
+   and trust it only after it matches the installed runtime. Hook trust remains
+   user-controlled on each Mac.
+
+Verify the new host independently:
+
+```bash
+launchctl print "gui/$(id -u)/com.coke1120.codex-pet"
+tail -n 50 "$HOME/Library/Application Support/CodexPet/daemon.out.log"
+tail -n 50 "$HOME/Library/Application Support/CodexPet/daemon.err.log"
+```
+
+`idle` is the correct state when no Codex turn is active. A submitted prompt
+should produce `running`; tests or review work can produce `review`; a real
+permission request produces `waiting`; and turn completion returns to `idle`.
+If the display remains `idle` throughout an active turn, first verify that the
+installed hooks were merged, reviewed, trusted, and are writing recent session
+records under `~/Library/Application Support/CodexPet/sessions/`.
+
+Weather values are real Hong Kong current conditions and forecasts fetched from
+Open-Meteo for `22.3193, 114.1694` in the `Asia/Hong_Kong` timezone every
+15 minutes. They are not demo constants or measurements from an onboard sensor,
+and require no CodexBar account. A failed refresh intentionally preserves the
+last good per-Mac cache, so check its `updated_epoch` and `daemon.err.log` before
+calling a displayed value current. After a cold board boot, the UI shows
+`Waiting for weather sync` until a host sends a snapshot; it marks data aging
+after 45 minutes and unavailable after three hours.
+
+### Copy-paste setup prompt for Codex on a new Mac
+
+Replace the three input values before pasting this prompt into a Codex task on
+the new Mac. Keep the board-specific USB serial private to your local setup; do
+not commit it to this repository.
+
+```text
+Set up my already-flashed GUITION JC4880P443C-I-W Codex Pet on this Mac and
+verify the macOS host synchronization end to end.
+
+Inputs:
+- Repository: <ABSOLUTE_PATH_TO_CODEX_PET_DEV_BOARD>
+- Previously attested P4 USB serial: <12_HEX_SERIAL_OR_UNKNOWN>
+- CodexBar quota setup and live OAuth refresh authorized: <YES_OR_NO>
+
+Work autonomously through every safe, reversible step. Preserve existing
+worktree changes and unrelated Codex hooks. Do not commit or push unless I ask.
+
+Non-negotiable safety boundaries:
+- The P4 firmware is already installed. Do not build, erase, flash, or change
+  firmware, and do not put either chip into Download Mode.
+- Do not access or flash the ESP32-C6.
+- Use connector #4 as the P4 application USB Serial/JTAG console. Never guess a
+  CH340, C6, or generic Espressif device from VID/PID alone.
+- Ordinary selection requires exact ESP32-P4 or JC4880P443C metadata. A generic
+  303A:1001 console is allowed only when its one unique complete USB serial
+  exactly matches the previously attested P4 serial and an explicit /dev/cu.*
+  path. If that proof is unavailable or ambiguous, stop before installation and
+  report the missing evidence.
+- Keep exactly one exclusive Serial owner. Stop an existing daemon, bridge, or
+  monitor before a direct protocol test; do not open a second monitor while the
+  LaunchAgent owns the port.
+- Never expose CodexBar raw JSON, email, account identity, or OAuth material.
+  Never put prompts, transcripts, tool output, or working directories into hook
+  records, daemon logs, caches, or Serial payloads.
+
+Execution and verification:
+1. Work from the repository input. Read README.md, docs/CODEX_DESKTOP.md, and
+   .agents/skills/codex-pet-host-sync/SKILL.md plus its runbook. Record git
+   status and source revision without discarding local changes.
+2. Prepare the repository macOS Python venv if needed using the hash-locked
+   mac/requirements.txt, then inspect serial ports with pyserial verbose output.
+   Rediscover the new Mac's /dev/cu.* path; never copy a path from another Mac.
+3. Establish the P4 identity using the strict rules above, check lsof for an
+   existing owner, then use one temporary pyserial process with one exclusive
+   Serial handle. Create the probe under /tmp but invoke it with
+   <ABSOLUTE_PATH_TO_CODEX_PET_DEV_BOARD>/mac/.venv/bin/python. Prepend the
+   repository's mac directory to sys.path and import select_p4_port from
+   codex_pet_device plus list_ports from serial.tools. Open the verified port at
+   115200 with timeout=0.25, write_timeout=1.0, and exclusive=True, then
+   immediately re-enumerate ports and require
+   select_p4_port(list_ports.comports(), verified_port, pinned_serial_or_none)
+   to return that same explicit port before any write. On mismatch, close with
+   zero writes. After successful revalidation, wait 2.1 seconds for the reset,
+   clear input, then send the newline-terminated raw ASCII commands ping, status,
+   and capabilities in that same session. Use a bounded response loop of at most
+   two seconds per command and require exact pong, STATE <CURRENT_STATE>, and
+   CAPABILITIES 2 ... replies before installing launchd, then remove the
+   temporary probe. Do not use codex_pet_bridge.py interactive mode for these
+   raw commands; it accepts lifecycle states only. Keep provider retrieval,
+   Serial ACKs, and physical rendering as separate evidence.
+4. Install the transactional Application Support runtime and LaunchAgent with
+   bash mac/install.sh --port <VERIFIED_PORT>. If and only if the connector is
+   the already-attested generic console, also pass
+   --p4-usb-serial <ATTESTED_SERIAL>. Never add an allow-generic bypass.
+5. Before changing hooks, inspect ~/.codex/hooks.json and create a timestamped
+   backup when it exists. Then merge hooks without replacing unrelated entries:
+   python3 tools/install_codex_hooks.py \
+     --hooks "$HOME/.codex/hooks.json" \
+     --python "$HOME/Library/Application Support/CodexPet/runtime/bin/python" \
+     --hook-script "$HOME/Library/Application Support/CodexPet/runtime/codex_pet_hook.py"
+   The merger is additive. After verifying the new group, remove only exact
+   obsolete Codex Pet repository-path groups, never unrelated hooks.
+6. Verify source/runtime SHA-256 equality, one running
+   com.coke1120.codex-pet LaunchAgent, one exclusive owner of the intended port,
+   the pinned port/serial tuple when used, negotiated clock/quota/usage/weather
+   capabilities, private 0700 session directories, private 0600 records/caches,
+   and no new serial or identity error after a successful connection. Classify
+   optional provider warnings separately.
+7. Verify live Hong Kong Open-Meteo retrieval independently from Serial delivery.
+   Before starting or restarting the daemon, record whether
+   "$HOME/Library/Application Support/CodexPet/weather-cache.json" exists, its
+   mtime, and the byte size of daemon.err.log beside the runtime. Require the
+   cache to be created or its mtime to advance during this run, require no new
+   weather warning in the appended stderr segment, and require the numeric age
+   to satisfy 0 <= current_epoch - updated_epoch <= 1800. The sanitized cache
+   may contain only current, low, high, rain_pct, condition, and updated_epoch;
+   report those values. A future timestamp or merely recent retained cache is
+   not a successful current fetch.
+8. Discover the supported CodexBar executable without reading account data:
+   check CODEXBAR_CLI when set, command -v codexbar, /opt/homebrew/bin/codexbar,
+   /usr/local/bin/codexbar,
+   /Applications/CodexBar.app/Contents/Helpers/CodexBarCLI, and
+   $HOME/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI, then run the
+   discovered executable with --version. Only when the input says YES, install
+   CodexBar from its official project if none is found, pause for me to complete
+   any interactive sign-in, then perform the live OAuth refresh. Keep raw output
+   private and report only the six sanitized numeric quota fields. When the
+   input says NO, leave quota unverified/unavailable and continue with lifecycle,
+   clock, and weather.
+9. After all automatic setup is complete, give me one explicit checkpoint to
+   restart Codex, open /hooks, inspect the exact Application Support command,
+   and trust it. Do not claim lifecycle completion until I resume this task.
+10. After resume, prove real transitions: no active turn -> idle, submitted
+    prompt -> running, test/review work -> review, a real permission request ->
+    waiting when supported, and turn completion -> idle. If host logs change but
+    the panel does not, report the Serial/UI layer separately instead of
+    reflashing.
+11. Ask me to confirm the visible time, weather, icons, quota, and lifecycle on
+    the panel. Finish with a PASS/FAIL/UNPROVEN table for firmware protocol,
+    provider retrieval, Serial delivery, hooks, LaunchAgent, and physical UI,
+    including exact remaining blockers and no unsupported success claims.
+```
+
 See [Direct Codex Desktop and CLI synchronization](docs/CODEX_DESKTOP.md) for
 hook review, verification, logs, usage-data boundaries, and removal.
 
@@ -258,8 +447,13 @@ python3 -m venv .venv
 .venv/bin/python codex_pet_bridge.py --list
 .venv/bin/python codex_pet_bridge.py \
   --port /dev/cu.<verified-p4-port> \
+  --p4-usb-serial <chip-id-matched-usb-serial> \
   --interactive
 ```
+
+Omit `--p4-usb-serial` when current USB metadata already names `ESP32-P4` or
+`JC4880P443C`. Never derive or auto-enroll a pin from the first attached
+Espressif device.
 
 The supported lifecycle commands and responses are:
 

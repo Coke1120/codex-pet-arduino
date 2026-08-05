@@ -22,12 +22,17 @@ Keep each evidence layer independent:
 
 `STATE IDLE` proves only the P4's current state. Injected values prove the wire/UI path, not live providers. A successful provider query proves retrieval, not Serial delivery or visible pixels.
 
-Port identity is strict: only exact `ESP32-P4` or `JC4880P443C` USB metadata is
-identified as the target. Generic Espressif VID `303A` `USB JTAG/serial debug
-unit` metadata is rejected in both automatic and explicit selection; there is no
-generic-descriptor override. The bridge completes the exact P4 `ping` handshake
-before writing state, while the daemon completes both `ping` and capability
-negotiation first.
+Port identity is strict: ordinary selection accepts only exact `ESP32-P4` or
+`JC4880P443C` USB metadata. Generic Espressif VID `303A` `USB JTAG/serial debug
+unit` metadata is rejected in automatic and unpinned explicit selection; there
+is no VID/PID-only or allow-generic override. A separate `--p4-usb-serial` path
+may be used only after P4 `chip_id` has been correlated to the connector #4 USB
+serial. It also requires an explicit path, VID:PID `303A:1001`, one unique exact
+serial match, non-C6 Espressif metadata, and post-open revalidation on every
+reconnect. This pin prevents accidental confusion, is not cryptographic
+authentication, and never authorizes flashing. The bridge completes the exact
+P4 `ping` handshake before writing state, while the daemon completes both
+`ping` and capability negotiation first.
 
 Wi-Fi credentials belong only to the optional P4/C6 wireless candidate: they are
 RAM-only, lost on reboot, require reconnect, and never pass through the host
