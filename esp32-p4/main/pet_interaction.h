@@ -56,6 +56,7 @@ int32_t pet_navigation_opening_delta(pet_surface_t surface, int32_t delta_x,
                                      int32_t delta_y);
 int32_t pet_navigation_progress_from_drag(pet_surface_t surface, int32_t start_progress,
                                           int32_t delta_x, int32_t delta_y);
+int32_t pet_cardinal_gaze_progress_from_drag(int32_t delta, int32_t dimension);
 int32_t pet_navigation_release_target(int32_t progress, int32_t opening_delta);
 int64_t pet_clock_epoch_at(int64_t synced_epoch, int64_t synced_at_us, int64_t now_us);
 int64_t pet_epoch_add_seconds(int64_t epoch, int32_t seconds);

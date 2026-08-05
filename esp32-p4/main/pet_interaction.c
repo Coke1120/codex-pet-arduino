@@ -105,6 +105,14 @@ int32_t pet_navigation_progress_from_drag(pet_surface_t surface, int32_t start_p
     return (int32_t)progress;
 }
 
+int32_t pet_cardinal_gaze_progress_from_drag(int32_t delta, int32_t dimension)
+{
+    if (delta <= 0 || dimension <= 0) return 0;
+    int64_t progress = (int64_t)delta * PET_PANEL_PROGRESS_MAX * 2 / dimension;
+    if (progress > PET_PANEL_PROGRESS_MAX) return PET_PANEL_PROGRESS_MAX;
+    return (int32_t)progress;
+}
+
 int32_t pet_navigation_release_target(int32_t progress, int32_t opening_delta)
 {
     if (opening_delta >= PET_PAGE_RELEASE_DISTANCE) return PET_PANEL_PROGRESS_MAX;

@@ -88,14 +88,25 @@ python3 tools/convert_codex_pet_p4.py \
   --output esp32-p4/main/pet_generated.c
 ```
 
-The generated `pet_generated.c` contains all 73 used cells from the Codex Pet v2
-8×11 contract: nine standard animation rows plus 16 clockwise look directions.
-Frames remain at a 152×204 alpha-preserving source size and LVGL renders them at
-an exact integer 3× scale (456×612). Avoiding 73 pre-scaled bitmaps keeps the
-complete action set inside the configured application partition. The generated
-translation unit is intentionally gitignored; do not commit or publish it unless
-you own or have explicit permission to redistribute the artwork. Delete it to
-exercise the public fallback build.
+The default smooth raw profile exposes a 152-entry playback layout: `IDLE` 12,
+`RUNNING_RIGHT` 8, `RUNNING_LEFT` 8, `WAVING` 8, `JUMPING` 30, `FAILED` 18,
+`WAITING` 14, `RUNNING` 24, `REVIEW` 14, and `LOOK` 16. Legacy Codex Pet v2
+8×11 spritesheets still contribute their original 73 stored cells; converter
+pointer resampling maps each action onto the 152 playback entries without
+duplicating bitmap data.
+
+Frame directories with a version 2 `motion_manifest.json` instead use the
+manifest's dynamic action and playback counts; they are not resampled onto the
+152-entry compatibility layout. Larger compressed sets are supported (the
+current private candidate uses 720 playback frames) only when the complete
+linked application still fits its configured partition with the final 512 KiB
+reserved. Every input frame remains exact `152x204` RGBA, and LVGL renders it at
+an exact integer 3× scale (456×612). Do not infer safety from frame count or
+converter payload size alone. See [Private Video Pet Pipeline](VIDEO_PET.md) for
+the manifest-v2 compression, build, and evidence workflow. The generated
+translation unit is intentionally gitignored; do not commit or publish it
+unless you own or have explicit permission to redistribute the artwork. Delete
+it to exercise the public fallback build.
 
 The v2 rows are `idle`, `running-right`, `running-left`, `waving`, `jumping`,
 `failed`, `waiting`, active-task `running`, and `review`, followed by 16 look

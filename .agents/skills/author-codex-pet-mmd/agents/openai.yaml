@@ -1,0 +1,4 @@
+interface:
+  display_name: "Author Codex Pet MMD"
+  short_description: "Author private MMD pets for ESP32-P4"
+  default_prompt: "Use $author-codex-pet-mmd to turn an authorized private MMD or PMX model into status-readable frames and verify each integration layer."

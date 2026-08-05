@@ -150,6 +150,15 @@ rows and 16 clockwise look directions. `pet_generated.c` is gitignored. Do not
 commit or publish it unless you own or have explicit permission to redistribute
 the source artwork. Delete the generated file to restore the public test asset.
 
+An authorized MMD/PMX model can instead be posed and rendered offline into the
+same private frame transport. See the [MMD / PMX pet pipeline](docs/MMD_PET.md)
+for isolated Blender setup, the default mask-off model-like contrapposto,
+status-authored motion, and slide-driven four-direction gaze.
+
+An authorized video source can also be edited and matted offline into dynamic
+status clips. See the [private video pet pipeline](docs/VIDEO_PET.md) for the
+frame manifest, compressed asset build, and evidence gates.
+
 ## 2. Build and flash the ESP32-P4
 
 Open an ESP-IDF 5.5.1 shell and create a clean, isolated display-safe build.

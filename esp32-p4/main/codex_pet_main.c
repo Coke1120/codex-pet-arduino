@@ -12,6 +12,7 @@
 #include <time.h>
 
 #include "bsp/esp-bsp.h"
+#include "driver/jpeg_decode.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -53,6 +54,7 @@ typedef enum {
     ACTION_LOOK_UP,
     ACTION_LOOK_LEFT,
     ACTION_LOOK_RIGHT,
+    ACTION_LOOK_DOWN,
     ACTION_WAVE,
     ACTION_PRESENT,
     ACTION_THINK,
@@ -86,123 +88,71 @@ enum {
 
 typedef struct {
     const char *name;
-    uint8_t first_frame;
-    uint8_t frame_count;
-    const uint16_t *durations;
+    pet_motion_id_t motion;
+    pet_timing_id_t timing;
+    uint8_t segment_index;
+    uint8_t segment_count;
+    uint16_t tail_count;
     uint8_t priority;
     int8_t next_action;
     bool loop;
     bool interruptible;
 } pet_action_manifest_t;
 
-#define PET_IDLE_FRAME_MS 650U
-#define PET_RUNNING_FRAME_MS 280U
-#define PET_WAITING_FRAME_MS 520U
-#define PET_REVIEW_FRAME_MS 420U
-
-/*
- * V2 has three times as many lifecycle frames as v1. Preserve the familiar
- * per-frame cadence instead of compressing every row into the old loop time,
- * which made the character appear to run at two to three times normal speed.
- */
-static const uint16_t idle_durations[] = {
-    PET_IDLE_FRAME_MS, PET_IDLE_FRAME_MS, PET_IDLE_FRAME_MS,
-    PET_IDLE_FRAME_MS, PET_IDLE_FRAME_MS, PET_IDLE_FRAME_MS,
-};
-static const uint16_t blink_durations[] = {280, 110, 110, 140, 140, 320};
-static const uint16_t run_durations[] = {
-    PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS,
-    PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS,
-    PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS,
-};
-static const uint16_t wave_durations[] = {140, 140, 140, 280};
-static const uint16_t jump_durations[] = {140, 140, 140, 140, 280};
-static const uint16_t failed_durations[] = {140, 140, 140, 140, 140, 140, 140, 240};
-static const uint16_t waiting_durations[] = {
-    PET_WAITING_FRAME_MS, PET_WAITING_FRAME_MS, PET_WAITING_FRAME_MS,
-    PET_WAITING_FRAME_MS, PET_WAITING_FRAME_MS, PET_WAITING_FRAME_MS,
-};
-static const uint16_t running_durations[] = {
-    PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS,
-    PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS, PET_RUNNING_FRAME_MS,
-};
-static const uint16_t review_durations[] = {
-    PET_REVIEW_FRAME_MS, PET_REVIEW_FRAME_MS, PET_REVIEW_FRAME_MS,
-    PET_REVIEW_FRAME_MS, PET_REVIEW_FRAME_MS, PET_REVIEW_FRAME_MS,
-};
-static const uint16_t look_hold_durations[] = {850};
-static const uint16_t look_turn_durations[] = {100, 100, 100, 100, 100, 100, 100, 100, 220};
-static const uint16_t excited_durations[] = {95, 95, 95, 95, 180};
-static const uint16_t sleepy_durations[] = {240, 260, 300, 420, 700};
-
 #define ARRAY_COUNT(values) (sizeof(values) / sizeof((values)[0]))
-_Static_assert(ARRAY_COUNT(idle_durations) == PET_FRAME_IDLE_COUNT, "idle duration contract");
-_Static_assert(ARRAY_COUNT(blink_durations) == PET_FRAME_IDLE_COUNT, "blink duration contract");
-_Static_assert(ARRAY_COUNT(run_durations) == PET_FRAME_RUNNING_RIGHT_COUNT, "directional run contract");
-_Static_assert(ARRAY_COUNT(wave_durations) == PET_FRAME_WAVING_COUNT, "wave duration contract");
-_Static_assert(ARRAY_COUNT(jump_durations) == PET_FRAME_JUMPING_COUNT, "jump duration contract");
-_Static_assert(ARRAY_COUNT(failed_durations) == PET_FRAME_FAILED_COUNT, "failed duration contract");
-_Static_assert(ARRAY_COUNT(waiting_durations) == PET_FRAME_WAITING_COUNT, "waiting duration contract");
-_Static_assert(ARRAY_COUNT(running_durations) == PET_FRAME_RUNNING_COUNT, "running duration contract");
-_Static_assert(ARRAY_COUNT(review_durations) == PET_FRAME_REVIEW_COUNT, "review duration contract");
-_Static_assert(ARRAY_COUNT(look_hold_durations) == 1, "look hold contract");
-_Static_assert(ARRAY_COUNT(look_turn_durations) == 9, "look turn contract");
-_Static_assert(ARRAY_COUNT(excited_durations) == PET_FRAME_JUMPING_COUNT,
-               "excited duration contract");
-_Static_assert(ARRAY_COUNT(sleepy_durations) == 5, "sleepy duration contract");
-_Static_assert(PET_FRAME_LOOK_FIRST + PET_FRAME_LOOK_COUNT == PET_FRAME_COUNT,
-               "v2 frame ranges must fill the generated atlas contract");
 
 static const pet_action_manifest_t action_manifest[ACTION_COUNT] = {
-    [ACTION_IDLE] = {"idle", PET_FRAME_IDLE_FIRST, PET_FRAME_IDLE_COUNT, idle_durations,
+    [ACTION_IDLE] = {"idle", PET_MOTION_IDLE, PET_TIMING_IDLE, 0, 1, 0,
                      PRIORITY_IDLE, ACTION_CONTEXT, true, true},
-    [ACTION_BLINK] = {"blink", PET_FRAME_IDLE_FIRST, PET_FRAME_IDLE_COUNT, blink_durations,
+    [ACTION_BLINK] = {"blink", PET_MOTION_IDLE, PET_TIMING_BLINK, 0, 1, 0,
                       PRIORITY_IDLE, ACTION_CONTEXT, false, true},
-    [ACTION_LOOK_UP] = {"look_up", PET_FRAME_LOOK_FIRST, 1, look_hold_durations,
+    [ACTION_LOOK_UP] = {"look_up", PET_MOTION_LOOK, PET_TIMING_LOOK, 0, 4, 0,
                         PRIORITY_WEATHER, ACTION_CONTEXT, false, true},
-    [ACTION_LOOK_LEFT] = {"look_left", PET_FRAME_LOOK_FIRST + 12, 1, look_hold_durations,
+    [ACTION_LOOK_LEFT] = {"look_left", PET_MOTION_LOOK, PET_TIMING_LOOK, 3, 4, 0,
                           PRIORITY_TOUCH, ACTION_CONTEXT, false, false},
-    [ACTION_LOOK_RIGHT] = {"look_right", PET_FRAME_LOOK_FIRST + 4, 1, look_hold_durations,
+    [ACTION_LOOK_RIGHT] = {"look_right", PET_MOTION_LOOK, PET_TIMING_LOOK, 1, 4, 0,
                            PRIORITY_TOUCH, ACTION_CONTEXT, false, false},
-    [ACTION_WAVE] = {"wave", PET_FRAME_WAVING_FIRST, PET_FRAME_WAVING_COUNT, wave_durations,
+    [ACTION_LOOK_DOWN] = {"look_down", PET_MOTION_LOOK, PET_TIMING_LOOK, 2, 4, 0,
+                          PRIORITY_TOUCH, ACTION_CONTEXT, false, false},
+    [ACTION_WAVE] = {"wave", PET_MOTION_WAVING, PET_TIMING_WAVE, 0, 1, 0,
                      PRIORITY_TOUCH, ACTION_CONTEXT, false, false},
-    [ACTION_PRESENT] = {"present", PET_FRAME_WAVING_FIRST, PET_FRAME_WAVING_COUNT, wave_durations,
+    [ACTION_PRESENT] = {"present", PET_MOTION_WAVING, PET_TIMING_WAVE, 0, 1, 0,
                         PRIORITY_WEATHER, ACTION_CONTEXT, false, true},
-    [ACTION_THINK] = {"think", PET_FRAME_REVIEW_FIRST, PET_FRAME_REVIEW_COUNT, review_durations,
+    [ACTION_THINK] = {"think", PET_MOTION_REVIEW, PET_TIMING_REVIEW, 0, 1, 0,
                       PRIORITY_LIFECYCLE, ACTION_CONTEXT, false, true},
-    [ACTION_HAPPY] = {"happy", PET_FRAME_JUMPING_FIRST, PET_FRAME_JUMPING_COUNT, jump_durations,
+    [ACTION_HAPPY] = {"happy", PET_MOTION_JUMPING, PET_TIMING_JUMP, 0, 1, 0,
                       PRIORITY_TOUCH, ACTION_CONTEXT, false, false},
-    [ACTION_EXCITED] = {"excited", PET_FRAME_JUMPING_FIRST, PET_FRAME_JUMPING_COUNT, excited_durations,
+    [ACTION_EXCITED] = {"excited", PET_MOTION_JUMPING, PET_TIMING_EXCITED, 0, 1, 0,
                         PRIORITY_TOUCH, ACTION_CONTEXT, false, false},
-    [ACTION_SLEEPY] = {"sleepy", PET_FRAME_FAILED_FIRST + 3, 5, sleepy_durations,
+    [ACTION_SLEEPY] = {"sleepy", PET_MOTION_FAILED, PET_TIMING_SLEEPY, 0, 1, 5,
                        PRIORITY_WEATHER, ACTION_CONTEXT, false, true},
-    [ACTION_SIT] = {"sit", PET_FRAME_FAILED_FIRST + 7, 1, look_hold_durations,
+    [ACTION_SIT] = {"sit", PET_MOTION_FAILED, PET_TIMING_HOLD, 0, 1, 1,
                     PRIORITY_WEATHER, ACTION_CONTEXT, false, true},
-    [ACTION_RUN_LEFT] = {"run_left", PET_FRAME_RUNNING_LEFT_FIRST, PET_FRAME_RUNNING_LEFT_COUNT,
-                         run_durations, PRIORITY_LIFECYCLE, ACTION_CONTEXT, true, true},
-    [ACTION_RUN_RIGHT] = {"run_right", PET_FRAME_RUNNING_RIGHT_FIRST, PET_FRAME_RUNNING_RIGHT_COUNT,
-                          run_durations, PRIORITY_LIFECYCLE, ACTION_CONTEXT, true, true},
-    [ACTION_TURN_AROUND] = {"turn_around", PET_FRAME_LOOK_FIRST + 4, 9, look_turn_durations,
+    [ACTION_RUN_LEFT] = {"run_left", PET_MOTION_RUNNING_LEFT, PET_TIMING_RUN, 0, 1, 0,
+                         PRIORITY_LIFECYCLE, ACTION_CONTEXT, true, true},
+    [ACTION_RUN_RIGHT] = {"run_right", PET_MOTION_RUNNING_RIGHT, PET_TIMING_RUN, 0, 1, 0,
+                          PRIORITY_LIFECYCLE, ACTION_CONTEXT, true, true},
+    [ACTION_TURN_AROUND] = {"turn_around", PET_MOTION_LOOK, PET_TIMING_LOOK, 3, 4, 0,
                             PRIORITY_TOUCH, ACTION_CONTEXT, false, false},
-    [ACTION_WAITING_LONG] = {"waiting_long", PET_FRAME_WAITING_FIRST, PET_FRAME_WAITING_COUNT,
-                             waiting_durations, PRIORITY_LIFECYCLE, ACTION_CONTEXT, true, true},
-    [ACTION_REVIEW_POSITIVE] = {"review_positive", PET_FRAME_REVIEW_FIRST, PET_FRAME_REVIEW_COUNT,
-                                review_durations, PRIORITY_LIFECYCLE, ACTION_HAPPY, false, true},
-    [ACTION_REVIEW_CONCERNED] = {"review_concerned", PET_FRAME_FAILED_FIRST, PET_FRAME_FAILED_COUNT,
-                                 failed_durations, PRIORITY_LIFECYCLE, ACTION_CONTEXT, false, true},
-    [ACTION_NOTIFICATION] = {"notification", PET_FRAME_WAVING_FIRST, PET_FRAME_WAVING_COUNT,
-                             wave_durations, PRIORITY_TOUCH, ACTION_CONTEXT, false, false},
-    [ACTION_WEATHER_REACTION] = {"weather_reaction", PET_FRAME_WAVING_FIRST, PET_FRAME_WAVING_COUNT,
-                                 wave_durations, PRIORITY_WEATHER, ACTION_CONTEXT, false, true},
-    [ACTION_WEATHER_CONCERNED] = {"weather_concerned", PET_FRAME_FAILED_FIRST, PET_FRAME_FAILED_COUNT,
-                                  failed_durations, PRIORITY_WEATHER, ACTION_CONTEXT, false, true},
-    [ACTION_RUNNING] = {"running", PET_FRAME_RUNNING_FIRST, PET_FRAME_RUNNING_COUNT, running_durations,
+    [ACTION_WAITING_LONG] = {"waiting_long", PET_MOTION_WAITING, PET_TIMING_WAITING, 0, 1, 0,
+                             PRIORITY_LIFECYCLE, ACTION_CONTEXT, true, true},
+    [ACTION_REVIEW_POSITIVE] = {"review_positive", PET_MOTION_REVIEW, PET_TIMING_REVIEW, 0, 1, 0,
+                                PRIORITY_LIFECYCLE, ACTION_HAPPY, false, true},
+    [ACTION_REVIEW_CONCERNED] = {"review_concerned", PET_MOTION_FAILED, PET_TIMING_FAILED, 0, 1, 0,
+                                 PRIORITY_LIFECYCLE, ACTION_CONTEXT, false, true},
+    [ACTION_NOTIFICATION] = {"notification", PET_MOTION_WAVING, PET_TIMING_WAVE, 0, 1, 0,
+                             PRIORITY_TOUCH, ACTION_CONTEXT, false, false},
+    [ACTION_WEATHER_REACTION] = {"weather_reaction", PET_MOTION_WAVING, PET_TIMING_WAVE, 0, 1, 0,
+                                 PRIORITY_WEATHER, ACTION_CONTEXT, false, true},
+    [ACTION_WEATHER_CONCERNED] = {"weather_concerned", PET_MOTION_FAILED, PET_TIMING_FAILED, 0, 1, 0,
+                                  PRIORITY_WEATHER, ACTION_CONTEXT, false, true},
+    [ACTION_RUNNING] = {"running", PET_MOTION_RUNNING, PET_TIMING_RUNNING, 0, 1, 0,
                         PRIORITY_LIFECYCLE, ACTION_CONTEXT, true, true},
-    [ACTION_WAITING] = {"waiting", PET_FRAME_WAITING_FIRST, PET_FRAME_WAITING_COUNT, waiting_durations,
+    [ACTION_WAITING] = {"waiting", PET_MOTION_WAITING, PET_TIMING_WAITING, 0, 1, 0,
                         PRIORITY_LIFECYCLE, ACTION_CONTEXT, true, true},
-    [ACTION_REVIEW] = {"review", PET_FRAME_REVIEW_FIRST, PET_FRAME_REVIEW_COUNT, review_durations,
+    [ACTION_REVIEW] = {"review", PET_MOTION_REVIEW, PET_TIMING_REVIEW, 0, 1, 0,
                        PRIORITY_LIFECYCLE, ACTION_CONTEXT, true, true},
-    [ACTION_FAILED] = {"failed", PET_FRAME_FAILED_FIRST, PET_FRAME_FAILED_COUNT, failed_durations,
+    [ACTION_FAILED] = {"failed", PET_MOTION_FAILED, PET_TIMING_FAILED, 0, 1, 0,
                        PRIORITY_CRITICAL, ACTION_CONTEXT, false, false},
 };
 _Static_assert(ARRAY_COUNT(action_manifest) == ACTION_COUNT, "every action needs a manifest entry");
@@ -213,6 +163,255 @@ _Static_assert(PET_FRAME_H * PET_FRAME_SCALE / LV_SCALE_NONE == 612,
 _Static_assert((DISPLAY_WIDTH - 456) / 2 == 12, "home pet should keep 12 pixel side margins");
 _Static_assert(DISPLAY_HEIGHT - PET_PANEL_TOP == 280,
                "open panel intentionally exposes 280 pixels of the upper body");
+
+typedef struct {
+    jpeg_decoder_handle_t decoder;
+    uint8_t *jpeg_input;
+    size_t jpeg_input_capacity;
+    uint8_t *jpeg_output;
+    size_t jpeg_output_capacity;
+    uint8_t *frame_buffers[2];
+    lv_image_dsc_t frame_descriptors[2];
+    uint8_t active_buffer;
+} pet_asset_decoder_t;
+
+static pet_asset_decoder_t asset_decoder;
+
+static bool action_frame_range(pet_action_id_t action, uint16_t *first_frame,
+                               uint16_t *frame_count)
+{
+    const pet_action_manifest_t *manifest = &action_manifest[action];
+    const pet_motion_range_t *motion = &PET_ASSET_BUNDLE.motions[manifest->motion];
+    uint16_t first = motion->first_frame;
+    uint16_t count = motion->frame_count;
+
+    if (action == ACTION_IDLE) {
+        count = PET_ASSET_BUNDLE.idle_loop_count;
+    }
+    if (manifest->segment_count > 1U) {
+        if (count % manifest->segment_count != 0U ||
+            manifest->segment_index >= manifest->segment_count) {
+            return false;
+        }
+        count /= manifest->segment_count;
+        first += count * manifest->segment_index;
+    }
+    if (manifest->tail_count > 0U) {
+        if (manifest->tail_count > count) return false;
+        first += count - manifest->tail_count;
+        count = manifest->tail_count;
+    }
+    *first_frame = first;
+    *frame_count = count;
+    return count > 0U;
+}
+
+static bool alpha_rle_is_valid(const pet_frame_asset_t *frame)
+{
+    if (frame->alpha_rle_data == NULL || frame->alpha_rle_size == 0U ||
+        (frame->alpha_rle_size & 1U) != 0U) {
+        return false;
+    }
+    uint32_t pixels = 0;
+    for (uint32_t offset = 0; offset < frame->alpha_rle_size; offset += 2U) {
+        uint8_t run = frame->alpha_rle_data[offset];
+        if (run == 0U || pixels + run > PET_FRAME_ALPHA_BYTES) return false;
+        pixels += run;
+    }
+    return pixels == PET_FRAME_ALPHA_BYTES;
+}
+
+static bool validate_asset_bundle(void)
+{
+    if (PET_ASSET_BUNDLE.frame_count == 0U || PET_ASSET_BUNDLE.frames == NULL ||
+        PET_ASSET_BUNDLE.motions == NULL || PET_ASSET_BUNDLE.timings == NULL) {
+        ESP_LOGE(TAG, "Asset bundle is missing frames, motions, or timings");
+        return false;
+    }
+    for (uint16_t motion_id = 0; motion_id < PET_MOTION_COUNT; ++motion_id) {
+        const pet_motion_range_t *motion = &PET_ASSET_BUNDLE.motions[motion_id];
+        if (motion->frame_count == 0U ||
+            (uint32_t)motion->first_frame + motion->frame_count >
+                PET_ASSET_BUNDLE.frame_count) {
+            ESP_LOGE(TAG, "Asset motion %u is out of bounds", motion_id);
+            return false;
+        }
+    }
+    const pet_motion_range_t *idle = &PET_ASSET_BUNDLE.motions[PET_MOTION_IDLE];
+    const pet_motion_range_t *look = &PET_ASSET_BUNDLE.motions[PET_MOTION_LOOK];
+    if (PET_ASSET_BUNDLE.idle_loop_count == 0U ||
+        PET_ASSET_BUNDLE.idle_loop_count > idle->frame_count) {
+        ESP_LOGE(TAG, "Asset idle loop count is invalid");
+        return false;
+    }
+    if ((look->frame_count % 4U) != 0U) {
+        ESP_LOGE(TAG, "Asset LOOK motion must contain four equal segments");
+        return false;
+    }
+    for (uint16_t timing_id = 0; timing_id < PET_TIMING_COUNT; ++timing_id) {
+        const pet_timing_track_t *timing = &PET_ASSET_BUNDLE.timings[timing_id];
+        if (timing->durations_ms == NULL || timing->count == 0U) {
+            ESP_LOGE(TAG, "Asset timing %u is empty", timing_id);
+            return false;
+        }
+    }
+    for (uint16_t action = 0; action < ACTION_COUNT; ++action) {
+        uint16_t first;
+        uint16_t count;
+        if (!action_frame_range((pet_action_id_t)action, &first, &count) ||
+            (uint32_t)first + count > PET_ASSET_BUNDLE.frame_count ||
+            PET_ASSET_BUNDLE.timings[action_manifest[action].timing].count != count) {
+            ESP_LOGE(TAG, "Asset action %s has inconsistent frames/timing",
+                     action_manifest[action].name);
+            return false;
+        }
+    }
+    for (uint16_t index = 0; index < PET_ASSET_BUNDLE.frame_count; ++index) {
+        const pet_frame_asset_t *frame = &PET_ASSET_BUNDLE.frames[index];
+        if (PET_ASSET_BUNDLE.storage == PET_FRAME_STORAGE_RAW_RGB565A8) {
+            if (frame->raw == NULL) {
+                ESP_LOGE(TAG, "Raw asset frame %u is missing", index);
+                return false;
+            }
+        } else if (PET_ASSET_BUNDLE.storage == PET_FRAME_STORAGE_JPEG_ALPHA_RLE) {
+            jpeg_decode_picture_info_t info;
+            if (frame->jpeg_data == NULL || frame->jpeg_size == 0U ||
+                !alpha_rle_is_valid(frame) ||
+                jpeg_decoder_get_info(frame->jpeg_data, frame->jpeg_size, &info) != ESP_OK ||
+                info.width != PET_JPEG_PADDED_W || info.height != PET_JPEG_PADDED_H) {
+                ESP_LOGE(TAG, "Compressed asset frame %u is invalid", index);
+                return false;
+            }
+        } else {
+            ESP_LOGE(TAG, "Asset storage mode %d is unsupported", PET_ASSET_BUNDLE.storage);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool decode_alpha_rle(const pet_frame_asset_t *frame, uint8_t *output)
+{
+    uint32_t written = 0;
+    for (uint32_t offset = 0; offset < frame->alpha_rle_size; offset += 2U) {
+        uint8_t run = frame->alpha_rle_data[offset];
+        if (run == 0U || written + run > PET_FRAME_ALPHA_BYTES) return false;
+        memset(output + written, frame->alpha_rle_data[offset + 1U], run);
+        written += run;
+    }
+    return written == PET_FRAME_ALPHA_BYTES;
+}
+
+static const lv_image_dsc_t *decode_compressed_frame(uint16_t frame_index)
+{
+    const pet_frame_asset_t *frame = &PET_ASSET_BUNDLE.frames[frame_index];
+    if (frame->jpeg_size > asset_decoder.jpeg_input_capacity) return NULL;
+
+    memcpy(asset_decoder.jpeg_input, frame->jpeg_data, frame->jpeg_size);
+    const jpeg_decode_cfg_t decode_config = {
+        .output_format = JPEG_DECODE_OUT_FORMAT_RGB565,
+        .rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR,
+        .conv_std = JPEG_YUV_RGB_CONV_STD_BT601,
+    };
+    uint32_t output_size = 0;
+    esp_err_t result = jpeg_decoder_process(
+        asset_decoder.decoder, &decode_config, asset_decoder.jpeg_input, frame->jpeg_size,
+        asset_decoder.jpeg_output, asset_decoder.jpeg_output_capacity, &output_size);
+    if (result != ESP_OK || output_size != PET_JPEG_DECODE_BYTES) {
+        ESP_LOGE(TAG, "JPEG frame %u decode failed: %s, output %u", frame_index,
+                 esp_err_to_name(result), (unsigned int)output_size);
+        return NULL;
+    }
+
+    uint8_t next_buffer = asset_decoder.active_buffer ^ 1U;
+    uint8_t *destination = asset_decoder.frame_buffers[next_buffer];
+    for (uint16_t y = 0; y < PET_FRAME_H; ++y) {
+        const size_t source_offset =
+            (((size_t)y + 2U) * PET_JPEG_PADDED_W + 4U) * 2U;
+        memcpy(destination + (size_t)y * PET_FRAME_W * 2U,
+               asset_decoder.jpeg_output + source_offset, PET_FRAME_W * 2U);
+    }
+    if (!decode_alpha_rle(frame, destination + PET_FRAME_COLOUR_BYTES)) {
+        ESP_LOGE(TAG, "Alpha RLE frame %u decode failed", frame_index);
+        return NULL;
+    }
+    asset_decoder.active_buffer = next_buffer;
+    return &asset_decoder.frame_descriptors[next_buffer];
+}
+
+static const lv_image_dsc_t *initial_frame_descriptor(void)
+{
+    uint16_t first;
+    uint16_t count;
+    if (!action_frame_range(ACTION_IDLE, &first, &count)) return NULL;
+    if (PET_ASSET_BUNDLE.storage == PET_FRAME_STORAGE_RAW_RGB565A8) {
+        return PET_ASSET_BUNDLE.frames[first].raw;
+    }
+    return &asset_decoder.frame_descriptors[asset_decoder.active_buffer];
+}
+
+static bool initialize_asset_decoder(void)
+{
+    if (!validate_asset_bundle()) return false;
+    if (PET_ASSET_BUNDLE.storage == PET_FRAME_STORAGE_RAW_RGB565A8) return true;
+
+    uint32_t max_jpeg_size = 0;
+    for (uint16_t index = 0; index < PET_ASSET_BUNDLE.frame_count; ++index) {
+        if (PET_ASSET_BUNDLE.frames[index].jpeg_size > max_jpeg_size) {
+            max_jpeg_size = PET_ASSET_BUNDLE.frames[index].jpeg_size;
+        }
+    }
+    const jpeg_decode_memory_alloc_cfg_t input_config = {
+        .buffer_direction = JPEG_DEC_ALLOC_INPUT_BUFFER,
+    };
+    const jpeg_decode_memory_alloc_cfg_t output_config = {
+        .buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER,
+    };
+    asset_decoder.jpeg_input = jpeg_alloc_decoder_mem(
+        max_jpeg_size, &input_config, &asset_decoder.jpeg_input_capacity);
+    asset_decoder.jpeg_output = jpeg_alloc_decoder_mem(
+        PET_JPEG_DECODE_BYTES, &output_config, &asset_decoder.jpeg_output_capacity);
+    for (uint8_t index = 0; index < 2U; ++index) {
+        asset_decoder.frame_buffers[index] = heap_caps_malloc(
+            PET_FRAME_RGB565A8_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        asset_decoder.frame_descriptors[index] = (lv_image_dsc_t) {
+            .header.magic = LV_IMAGE_HEADER_MAGIC,
+            .header.cf = LV_COLOR_FORMAT_RGB565A8,
+            .header.flags = 0,
+            .header.w = PET_FRAME_W,
+            .header.h = PET_FRAME_H,
+            .header.stride = PET_FRAME_W * 2U,
+            .data_size = PET_FRAME_RGB565A8_BYTES,
+            .data = asset_decoder.frame_buffers[index],
+        };
+    }
+    if (asset_decoder.jpeg_input == NULL ||
+        asset_decoder.jpeg_input_capacity < max_jpeg_size ||
+        asset_decoder.jpeg_output == NULL ||
+        asset_decoder.jpeg_output_capacity < PET_JPEG_DECODE_BYTES ||
+        asset_decoder.frame_buffers[0] == NULL || asset_decoder.frame_buffers[1] == NULL) {
+        ESP_LOGE(TAG, "Asset decoder buffer allocation failed");
+        return false;
+    }
+    const jpeg_decode_engine_cfg_t engine_config = {
+        .intr_priority = 0,
+        .timeout_ms = 100,
+    };
+    esp_err_t result = jpeg_new_decoder_engine(&engine_config, &asset_decoder.decoder);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "JPEG decoder initialization failed: %s", esp_err_to_name(result));
+        return false;
+    }
+    asset_decoder.active_buffer = 1U;
+    uint16_t first;
+    uint16_t count;
+    if (!action_frame_range(ACTION_IDLE, &first, &count) ||
+        decode_compressed_frame(first) == NULL) {
+        ESP_LOGE(TAG, "Initial compressed pet frame failed to decode");
+        return false;
+    }
+    return true;
+}
 
 typedef struct {
     bool valid;
@@ -293,11 +492,13 @@ typedef struct {
     pet_action_id_t base_action;
     pet_action_id_t active_action;
     pet_action_id_t pending_action;
-    uint8_t action_frame;
+    uint16_t action_frame;
     int32_t panel_progress;
     int32_t gesture_start_progress;
+    int32_t gesture_start_gaze_progress;
     int32_t settings_progress;
     int32_t usage_progress;
+    int32_t left_gaze_progress;
     int16_t gesture_start_x;
     int16_t gesture_start_y;
     bool gesture_active;
@@ -491,19 +692,35 @@ static pet_action_id_t lifecycle_action(pet_lifecycle_t state)
     }
 }
 
-static uint32_t action_duration(pet_action_id_t action, uint8_t frame)
+static uint32_t action_duration(pet_action_id_t action, uint16_t frame)
 {
     const pet_action_manifest_t *manifest = &action_manifest[action];
-    if (frame >= manifest->frame_count) frame = manifest->frame_count - 1;
-    return manifest->durations[frame];
+    const pet_timing_track_t *timing = &PET_ASSET_BUNDLE.timings[manifest->timing];
+    if (frame >= timing->count) frame = timing->count - 1U;
+    return timing->durations_ms[frame];
 }
 
 static void show_frame_locked(void)
 {
-    const pet_action_manifest_t *manifest = &action_manifest[ui.active_action];
-    uint8_t index = manifest->first_frame + ui.action_frame;
-    if (index >= PET_FRAME_COUNT) index = PET_FRAME_IDLE_FIRST;
-    lv_image_set_src(ui.image, PET_FRAMES[index]);
+    uint16_t first;
+    uint16_t count;
+    if (!action_frame_range(ui.active_action, &first, &count)) return;
+    uint16_t index = first + ui.action_frame;
+    if (ui.action_frame >= count || index >= PET_ASSET_BUNDLE.frame_count) {
+        if (!action_frame_range(ACTION_IDLE, &first, &count)) return;
+        index = first;
+    }
+    const lv_image_dsc_t *descriptor;
+    if (PET_ASSET_BUNDLE.storage == PET_FRAME_STORAGE_RAW_RGB565A8) {
+        descriptor = PET_ASSET_BUNDLE.frames[index].raw;
+    } else {
+        descriptor = decode_compressed_frame(index);
+    }
+    if (descriptor == NULL) {
+        ESP_LOGE(TAG, "Keeping previous pet image after frame %u failed", index);
+        return;
+    }
+    lv_image_set_src(ui.image, descriptor);
 }
 
 static void set_active_action_locked(pet_action_id_t action)
@@ -512,10 +729,54 @@ static void set_active_action_locked(pet_action_id_t action)
     ui.action_frame = 0;
     show_frame_locked();
     if (ui.animation_timer != NULL) {
+        lv_timer_resume(ui.animation_timer);
         lv_timer_set_period(ui.animation_timer, action_duration(action, 0));
         lv_timer_reset(ui.animation_timer);
     }
 }
+
+static bool action_is_gaze(pet_action_id_t action)
+{
+    return action == ACTION_LOOK_UP || action == ACTION_LOOK_RIGHT ||
+           action == ACTION_LOOK_DOWN || action == ACTION_LOOK_LEFT;
+}
+
+static void set_gaze_progress_locked(pet_action_id_t action, int32_t progress)
+{
+    if (progress < 0) progress = 0;
+    if (progress > PET_PANEL_PROGRESS_MAX) progress = PET_PANEL_PROGRESS_MAX;
+
+    if (progress == 0) {
+        if (ui.active_action == action) {
+            set_active_action_locked(ui.base_action);
+        }
+        return;
+    }
+    const pet_action_manifest_t *current = &action_manifest[ui.active_action];
+    const pet_action_manifest_t *gaze = &action_manifest[action];
+    if (!action_is_gaze(ui.active_action) && ui.active_action != ui.base_action &&
+        !pet_action_can_interrupt(current->priority, current->interruptible,
+                                  gaze->priority)) {
+        return;
+    }
+
+    uint16_t first;
+    uint16_t frame_count;
+    if (!action_frame_range(action, &first, &frame_count)) return;
+    uint16_t frame = (uint16_t)((int64_t)progress * (frame_count - 1U) /
+                                PET_PANEL_PROGRESS_MAX);
+    if (ui.active_action != action || ui.action_frame != frame) {
+        ui.active_action = action;
+        ui.action_frame = frame;
+        show_frame_locked();
+    }
+    if (ui.animation_timer != NULL) {
+        lv_timer_pause(ui.animation_timer);
+    }
+}
+
+static void set_left_gaze_progress_locked(int32_t progress);
+static void left_gaze_progress_animation(void *variable, int32_t value);
 
 static bool can_interrupt_with(pet_action_id_t action)
 {
@@ -557,7 +818,10 @@ static void update_animation(lv_timer_t *timer)
 {
     (void)timer;
     const pet_action_manifest_t *manifest = &action_manifest[ui.active_action];
-    if (ui.action_frame + 1 < manifest->frame_count) {
+    uint16_t first;
+    uint16_t frame_count;
+    if (!action_frame_range(ui.active_action, &first, &frame_count)) return;
+    if (ui.action_frame + 1U < frame_count) {
         ++ui.action_frame;
     } else if (manifest->loop) {
         if (ui.pending_action != ACTION_COUNT) {
@@ -571,7 +835,14 @@ static void update_animation(lv_timer_t *timer)
         set_active_action_locked((pet_action_id_t)manifest->next_action);
         return;
     } else {
-        set_active_action_locked(contextual_action_locked());
+        pet_action_id_t contextual = contextual_action_locked();
+        if (contextual == ui.active_action && action_is_gaze(contextual)) {
+            ui.action_frame = frame_count - 1U;
+            show_frame_locked();
+            lv_timer_pause(ui.animation_timer);
+            return;
+        }
+        set_active_action_locked(contextual);
         return;
     }
     show_frame_locked();
@@ -1112,12 +1383,7 @@ static void set_panel_progress_locked(int32_t progress)
         }
     }
 
-    if (progress == PET_PANEL_PROGRESS_MAX && ui.base_action == ACTION_IDLE &&
-        action_manifest[ui.active_action].priority <= PRIORITY_WEATHER) {
-        set_active_action_locked(ACTION_LOOK_UP);
-    } else if (progress == 0 && ui.active_action == ACTION_LOOK_UP) {
-        set_active_action_locked(ui.base_action);
-    }
+    set_gaze_progress_locked(ACTION_LOOK_UP, progress);
 }
 
 static void panel_progress_animation(void *variable, int32_t value)
@@ -1140,11 +1406,6 @@ static void animate_panel_to_locked(int32_t target)
     ui.active_surface = target == PET_PANEL_PROGRESS_MAX
         ? PET_SURFACE_TODAY : PET_SURFACE_HOME;
 
-    if (target == 0 && ui.pending_action == ACTION_LOOK_UP) {
-        ui.pending_action = ACTION_COUNT;
-    } else if (target == PET_PANEL_PROGRESS_MAX && ui.base_action == ACTION_IDLE) {
-        queue_or_start_action_locked(ACTION_LOOK_UP);
-    }
 }
 
 static void panel_drag_event(lv_event_t *event)
@@ -1167,6 +1428,8 @@ static void panel_drag_event(lv_event_t *event)
         ui.gesture_start_progress = ui.panel_progress;
         ui.gesture_moved = false;
         lv_anim_delete(&ui, panel_progress_animation);
+        lv_anim_delete(&ui, left_gaze_progress_animation);
+        set_left_gaze_progress_locked(0);
     } else if (code == LV_EVENT_PRESSING && ui.gesture_active) {
         int32_t delta = point.y - ui.gesture_start_y;
         if (delta > PANEL_DRAG_THRESHOLD || delta < -PANEL_DRAG_THRESHOLD) {
@@ -1192,6 +1455,7 @@ static void set_settings_progress_locked(int32_t progress)
     ui.settings_progress = progress;
     lv_obj_set_x(ui.settings_page, DISPLAY_WIDTH -
                  DISPLAY_WIDTH * progress / PET_PANEL_PROGRESS_MAX);
+    set_gaze_progress_locked(ACTION_LOOK_RIGHT, progress);
 }
 
 static void set_usage_progress_locked(int32_t progress)
@@ -1202,6 +1466,7 @@ static void set_usage_progress_locked(int32_t progress)
     ui.usage_progress = progress;
     lv_obj_set_y(ui.usage_page, DISPLAY_HEIGHT -
                  DISPLAY_HEIGHT * progress / PET_PANEL_PROGRESS_MAX);
+    set_gaze_progress_locked(ACTION_LOOK_DOWN, progress);
 }
 
 static void settings_progress_animation(void *variable, int32_t value)
@@ -1214,6 +1479,38 @@ static void usage_progress_animation(void *variable, int32_t value)
 {
     (void)variable;
     set_usage_progress_locked(value);
+}
+
+static void set_left_gaze_progress_locked(int32_t progress)
+{
+    if (progress < 0) progress = 0;
+    if (progress > PET_PANEL_PROGRESS_MAX) progress = PET_PANEL_PROGRESS_MAX;
+    ui.left_gaze_progress = progress;
+    set_gaze_progress_locked(ACTION_LOOK_LEFT, progress);
+}
+
+static void left_gaze_progress_animation(void *variable, int32_t value)
+{
+    (void)variable;
+    set_left_gaze_progress_locked(value);
+}
+
+static void animate_left_gaze_home_locked(void)
+{
+    lv_anim_delete(&ui, left_gaze_progress_animation);
+    if (ui.left_gaze_progress == 0) {
+        set_left_gaze_progress_locked(0);
+        return;
+    }
+
+    lv_anim_t animation;
+    lv_anim_init(&animation);
+    lv_anim_set_var(&animation, &ui);
+    lv_anim_set_exec_cb(&animation, left_gaze_progress_animation);
+    lv_anim_set_values(&animation, ui.left_gaze_progress, 0);
+    lv_anim_set_duration(&animation, PAGE_ANIMATION_MS);
+    lv_anim_set_path_cb(&animation, lv_anim_path_ease_out);
+    lv_anim_start(&animation);
 }
 
 static void page_animation_completed(lv_anim_t *animation)
@@ -1266,8 +1563,10 @@ static void page_navigation_event(lv_event_t *event)
         ui.gesture_start_progress = ui.active_surface == PET_SURFACE_SETTINGS
             ? ui.settings_progress : ui.active_surface == PET_SURFACE_USAGE
             ? ui.usage_progress : 0;
+        ui.gesture_start_gaze_progress = ui.left_gaze_progress;
         lv_anim_delete(&ui, settings_progress_animation);
         lv_anim_delete(&ui, usage_progress_animation);
+        lv_anim_delete(&ui, left_gaze_progress_animation);
         return;
     }
     if (!ui.gesture_active) return;
@@ -1282,10 +1581,17 @@ static void page_navigation_event(lv_event_t *event)
                 ui.active_surface, ui.gesture_axis, delta_x, delta_y, ui.gesture_start_y);
             if (ui.active_surface == PET_SURFACE_HOME) {
                 if (target != PET_SURFACE_SETTINGS && target != PET_SURFACE_USAGE) {
-                    ui.gesture_active = false;
-                    return;
+                    bool left_gaze_drag = target == PET_SURFACE_HOME &&
+                        ui.gesture_axis == PET_GESTURE_AXIS_HORIZONTAL && delta_x > 0;
+                    if (!left_gaze_drag) {
+                        animate_left_gaze_home_locked();
+                        ui.gesture_active = false;
+                        return;
+                    }
+                } else {
+                    ui.left_gaze_progress = 0;
+                    ui.gesture_surface = target;
                 }
-                ui.gesture_surface = target;
             } else if (target != PET_SURFACE_HOME) {
                 ui.gesture_active = false;
                 return;
@@ -1295,21 +1601,33 @@ static void page_navigation_event(lv_event_t *event)
             delta_y > PANEL_DRAG_THRESHOLD || delta_y < -PANEL_DRAG_THRESHOLD) {
             ui.gesture_moved = true;
         }
-        int32_t progress = pet_navigation_progress_from_drag(
-            ui.gesture_surface, ui.gesture_start_progress, delta_x, delta_y);
-        if (ui.gesture_surface == PET_SURFACE_SETTINGS) {
+        if (ui.gesture_surface == PET_SURFACE_HOME) {
+            set_left_gaze_progress_locked(ui.gesture_start_gaze_progress +
+                pet_cardinal_gaze_progress_from_drag(
+                    delta_x, PET_NAVIGATION_DISPLAY_WIDTH));
+        } else if (ui.gesture_surface == PET_SURFACE_SETTINGS) {
+            int32_t progress = pet_navigation_progress_from_drag(
+                ui.gesture_surface, ui.gesture_start_progress, delta_x, delta_y);
             set_settings_progress_locked(progress);
         } else {
+            int32_t progress = pet_navigation_progress_from_drag(
+                ui.gesture_surface, ui.gesture_start_progress, delta_x, delta_y);
             set_usage_progress_locked(progress);
         }
     } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
         if (ui.gesture_axis != PET_GESTURE_AXIS_NONE) {
-            int32_t progress = ui.gesture_surface == PET_SURFACE_SETTINGS
-                ? ui.settings_progress : ui.usage_progress;
-            int32_t opening_delta = pet_navigation_opening_delta(
-                ui.gesture_surface, delta_x, delta_y);
-            animate_page_to_locked(ui.gesture_surface,
-                pet_navigation_release_target(progress, opening_delta));
+            if (ui.gesture_surface == PET_SURFACE_HOME) {
+                animate_left_gaze_home_locked();
+            } else {
+                int32_t progress = ui.gesture_surface == PET_SURFACE_SETTINGS
+                    ? ui.settings_progress : ui.usage_progress;
+                int32_t opening_delta = pet_navigation_opening_delta(
+                    ui.gesture_surface, delta_x, delta_y);
+                animate_page_to_locked(ui.gesture_surface,
+                    pet_navigation_release_target(progress, opening_delta));
+            }
+        } else if (ui.left_gaze_progress > 0) {
+            animate_left_gaze_home_locked();
         }
         ui.gesture_active = false;
     }
@@ -1330,6 +1648,8 @@ static void tap_pet(lv_event_t *event)
     int64_t now = esp_timer_get_time();
     if (now - ui.last_tap_us < TAP_COOLDOWN_US) return;
     ui.last_tap_us = now;
+    lv_anim_delete(&ui, left_gaze_progress_animation);
+    set_left_gaze_progress_locked(0);
 
     static const pet_action_id_t reactions[] = {
         ACTION_BLINK,
@@ -1337,6 +1657,7 @@ static void tap_pet(lv_event_t *event)
         ACTION_HAPPY,
         ACTION_LOOK_LEFT,
         ACTION_LOOK_RIGHT,
+        ACTION_LOOK_DOWN,
         ACTION_TURN_AROUND,
         ACTION_EXCITED,
     };
@@ -1774,7 +2095,7 @@ static void create_ui(void)
     lv_obj_clear_flag(ui.screen, LV_OBJ_FLAG_SCROLLABLE);
 
     ui.image = lv_image_create(ui.screen);
-    lv_image_set_src(ui.image, PET_FRAMES[PET_FRAME_IDLE_FIRST]);
+    lv_image_set_src(ui.image, initial_frame_descriptor());
     lv_image_set_scale(ui.image, PET_FRAME_SCALE);
     lv_image_set_antialias(ui.image, false);
     lv_obj_set_align(ui.image, LV_ALIGN_TOP_MID);
@@ -1795,8 +2116,10 @@ static void create_ui(void)
     ui.pending_action = ACTION_COUNT;
     ui.action_frame = 0;
     ui.panel_progress = 0;
+    ui.gesture_start_gaze_progress = 0;
     ui.settings_progress = 0;
     ui.usage_progress = 0;
+    ui.left_gaze_progress = 0;
     ui.active_surface = PET_SURFACE_HOME;
     ui.gesture_surface = PET_SURFACE_HOME;
     ui.gesture_axis = PET_GESTURE_AXIS_NONE;
@@ -1945,6 +2268,11 @@ void app_main(void)
         return;
     }
     log_main_init_stack_high_water("display/BSP");
+
+    if (!initialize_asset_decoder()) {
+        log_main_init_failure("pet asset decoder");
+        return;
+    }
 
     if (!bsp_display_lock(0)) {
         log_main_init_failure("LVGL lock");

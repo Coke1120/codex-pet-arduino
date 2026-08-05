@@ -22,3 +22,6 @@ pet_generated.h
 *.log
 .env
 .env.*
+
+# Local OMX review/runtime state
+.omx/

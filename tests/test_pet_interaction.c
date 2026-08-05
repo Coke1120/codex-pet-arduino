@@ -49,6 +49,11 @@ int main(void)
     assert(pet_navigation_progress_from_drag(PET_SURFACE_USAGE, 0, 0, -400) == 500);
     assert(pet_navigation_progress_from_drag(PET_SURFACE_TODAY, 0, 0, 800) == 1000);
     assert(pet_navigation_progress_from_drag(PET_SURFACE_USAGE, 1000, 0, 800) == 0);
+    assert(pet_cardinal_gaze_progress_from_drag(-1, 480) == 0);
+    assert(pet_cardinal_gaze_progress_from_drag(120, 480) == 500);
+    assert(pet_cardinal_gaze_progress_from_drag(240, 480) == 1000);
+    assert(pet_cardinal_gaze_progress_from_drag(INT32_MAX, 1) == 1000);
+    assert(pet_cardinal_gaze_progress_from_drag(10, 0) == 0);
     assert(pet_navigation_release_target(349, 0) == 0);
     assert(pet_navigation_release_target(350, 0) == 1000);
     assert(pet_navigation_release_target(1, 72) == 1000);
